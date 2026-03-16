@@ -1,0 +1,13 @@
+# Ασφάλεια
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+env/
+.env
+
+# Windows
+Thumbs.db
+Desktop.ini
