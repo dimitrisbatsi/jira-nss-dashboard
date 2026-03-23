@@ -1,6 +1,10 @@
 # Ασφάλεια
 .streamlit/secrets.toml
 
+#Logs and Backups
+logs/
+Backups/
+
 # Python
 __pycache__/
 *.pyc

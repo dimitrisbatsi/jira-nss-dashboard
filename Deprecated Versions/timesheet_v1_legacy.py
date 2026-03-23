@@ -3,13 +3,30 @@ import pandas as pd
 import requests
 import plotly.express as px
 import io
-import sqlite3
-import os
 from datetime import datetime
 
-# --- 1. Ρυθμίσεις Σελίδας ---
+# --- 1. Ρυθμίσεις Σελίδας & Σύνδεσης ---
 st.set_page_config(layout="wide", page_title="NSS Timesheet Dashboard", page_icon="📊")
+
+# ΣΤΟΙΧΕΙΑ ΣΥΝΔΕΣΗΣ
 JIRA_DOMAIN = "epsilon-singularlogic.atlassian.net"
+
+try:
+    EMAIL = st.secrets["JIRA_EMAIL"]
+    API_TOKEN = st.secrets["JIRA_TOKEN"]
+    # JWT_TOKEN = st.secrets["JIRA_JWT_TOKEN"]
+except KeyError:
+    st.error("❌ Δεν βρέθηκαν τα απαραίτητα Secrets (EMAIL/TOKEN ή JWT). Ελέγξτε το αρχείο .streamlit/secrets.toml")
+    st.stop()
+
+BASE_URL = f"https://{JIRA_DOMAIN}/rest/api/3/search/jql"
+
+# --- 2. Συναρτήσεις Διαμόρφωσης & Ασφάλειας ---
+def safe_get(data, key, subkey="value", default="N/A"):
+    item = data.get(key)
+    if item is None:
+        return default
+    return item.get(subkey, default)
 
 def format_to_hhmm(minutes):
     if pd.isna(minutes) or minutes <= 0: return "00:00"
@@ -17,77 +34,96 @@ def format_to_hhmm(minutes):
     mins = int(minutes % 60)
     return f"{hours:02d}:{mins:02d}"
 
-# --- 2. Φόρτωση από Βάση Δεδομένων ---
-@st.cache_data(ttl=60) # Cache για 1 λεπτό μόνο, αφού η DB είναι αστραπιαία
-def load_data_from_db():
-    db_path = "timesheet.db"
-    if not os.path.exists(db_path):
-        return pd.DataFrame(), "Ποτέ"
-    
-    # Ανάγνωση από SQLite
-    conn = sqlite3.connect(db_path)
-    df = pd.read_sql("SELECT * FROM worklogs", conn)
-    conn.close()
-    
-    # Διαβάζουμε την ώρα που τροποποιήθηκε το αρχείο DB
-    mtime = os.path.getmtime(db_path)
-    last_updated = datetime.fromtimestamp(mtime).strftime("%d/%m/%Y %H:%M")
-    
-    return df, last_updated
+@st.cache_data(ttl=600)
+def get_jira_data():
+    fetch_time = datetime.now().strftime("%d/%m/%Y %H:%M")
+    all_issues = []
+    page_token = ""
+    jql = 'project IN (PYLCOM, PYLFLE, GLXENT, ESLKAS, PYLACC, PYLHOS, ESLLEG) AND issuetype = "Time Type" AND status = "Time Entered" ORDER BY created DESC'
+    fields = "worklog,assignee,summary,project,components,customfield_10553,customfield_10193,parent"
 
-df, last_updated = load_data_from_db()
+    while True:
+        params = {"jql": jql, "fields": fields, "maxResults": 100, "nextPageToken": page_token}
+        response = requests.get(BASE_URL, params=params, auth=(EMAIL, API_TOKEN)).json()
+        
+        batch = response.get("issues", [])
+        if not batch: break
+        all_issues.extend(batch)
+        page_token = response.get("nextPageToken")
+        if not page_token or response.get("isLast"): break
+
+    rows = []
+    for issue in all_issues:
+        f = issue.get("fields", {})
+        project = f.get("project", {}).get("name", "N/A")
+        
+        time_type = safe_get(f, "customfield_10553")
+        charge_type = safe_get(f, "customfield_10193")
+        parent_key = f.get("parent", {}).get("key", "N/A")
+        components = [c["name"] for c in f.get("components", [])] if f.get("components") else ["No Component"]
+        
+        worklogs = f.get("worklog", {}).get("worklogs", [])
+        for wl in worklogs:
+            rows.append({
+                "Issue Key": issue["key"],
+                "Parent Key": parent_key,
+                "Project": project,
+                "Assignee": wl.get("author", {}).get("displayName", "Unknown"),
+                "Time Type": time_type,
+                "Charge Type": charge_type,
+                "Minutes": wl["timeSpentSeconds"] / 60,
+                "Date": wl["started"][:10],
+                "Components": components
+            })
+    return pd.DataFrame(rows), fetch_time
+
+# --- 3. Φόρτωση Δεδομένων ---
+df, last_updated = get_jira_data()
 
 if df.empty:
-    st.warning("⚠️ Η Βάση Δεδομένων είναι άδεια ή δεν έχει δημιουργηθεί. Παρακαλώ τρέξτε το sync_db.py")
+    st.warning("Δεν βρέθηκαν δεδομένα.")
     st.stop()
 
 # --- 4. SIDEBAR (Μόνο Φίλτρα Αναζήτησης) ---
 st.sidebar.title("🎛️ Φίλτρα Αναζήτησης")
 
-# --- Κουμπί Reset Filters ---
+# --- ΝΕΟ: Κουμπί Reset Filters (Τώρα καθαρίζει ΚΑΙ τη μνήμη) ---
 if st.sidebar.button("🔄 Καθαρισμός Φίλτρων", type="primary", use_container_width=True):
     st.query_params.clear()
-    st.session_state.clear() # Καθαρίζει την εσωτερική μνήμη
+    st.session_state.clear() # <--- ΠΟΛΥ ΣΗΜΑΝΤΙΚΟ
     st.rerun()
 
-# 1. INITIALIZATION: Διαβάζουμε το URL ΜΟΝΟ την πρώτη φορά που ανοίγει η εφαρμογή
-if "filters_init" not in st.session_state:
+# 1. Διαβάζουμε το URL ΜΟΝΟ την πρώτη φορά (Initialization)
+if "filters_initialized" not in st.session_state:
     url_params = st.query_params
     
-    # Φτιάχνουμε καθαρές, αλφαβητικά ταξινομημένες λίστες για όλα τα πεδία
-    all_proj = sorted([str(x) for x in df["Project"].dropna().unique()])
-    all_auth = sorted([str(x) for x in df["Assignee"].dropna().unique()])
-    all_charge = sorted([str(x) for x in df["Charge Type"].dropna().unique()])
-    all_time = sorted([str(x) for x in df["Time Type"].dropna().unique()])
-    
-    # Αποθηκεύουμε τα defaults στα keys. 
-    # Αν το URL έχει τιμές, τις παίρνουμε (ταξινομημένες), αλλιώς βάζουμε τα πάντα (ήδη ταξινομημένα).
-    st.session_state['proj_key'] = sorted(url_params.get_all("project")) if url_params.get_all("project") else all_proj
-    st.session_state['auth_key'] = sorted(url_params.get_all("Assignee")) if url_params.get_all("Assignee") else all_auth
-    st.session_state['charge_key'] = sorted(url_params.get_all("charge")) if url_params.get_all("charge") else all_charge
-    st.session_state['time_key'] = sorted(url_params.get_all("time")) if url_params.get_all("time") else all_time
+    st.session_state['proj'] = url_params.get_all("project") or df["Project"].unique().tolist()
+    st.session_state['auth'] = url_params.get_all("Assignee") or df["Assignee"].unique().tolist()
+    st.session_state['charge'] = url_params.get_all("charge") or df["Charge Type"].unique().tolist()
+    st.session_state['time'] = url_params.get_all("time") or df["Time Type"].unique().tolist()
     
     raw_dates = url_params.get_all("dateRange")
     if raw_dates:
-        st.session_state['dates_key'] = [pd.to_datetime(d).date() for d in raw_dates]
+        st.session_state['dates'] = [pd.to_datetime(d).date() for d in raw_dates]
     else:
-        st.session_state['dates_key'] = [pd.to_datetime(df['Date']).min(), pd.to_datetime(df['Date']).max()]
+        st.session_state['dates'] = [pd.to_datetime(df['Date']).min(), pd.to_datetime(df['Date']).max()]
         
-    group_options = ["Assignee", "Parent Key", "Issue Key", "Project", "Time Type", "Charge Type"]
-    url_group = url_params.get_all("groupBy")
-    valid_group = [g for g in url_group if g in group_options]
-    st.session_state['group_key'] = valid_group if valid_group else ["Assignee", "Parent Key"]
-    
-    st.session_state["filters_init"] = True
+    st.session_state["filters_initialized"] = True
 
-# 2. WIDGETS: Χρησιμοποιούμε τις ταξινομημένες λίστες στα options
-date_range = st.sidebar.date_input("📅 Ημερομηνίες", key="dates_key")
-sel_proj = st.sidebar.multiselect("📁 Project", options=sorted([str(x) for x in df["Project"].dropna().unique()]), key="proj_key")
-sel_auth = st.sidebar.multiselect("👤 Assignee", options=sorted([str(x) for x in df["Assignee"].dropna().unique()]), key="auth_key")
-sel_charge = st.sidebar.multiselect("💰 Charge Type", options=sorted([str(x) for x in df["Charge Type"].dropna().unique()]), key="charge_key")
-sel_time = st.sidebar.multiselect("⏱️ Time Type", options=sorted([str(x) for x in df["Time Type"].dropna().unique()]), key="time_key")
+# 2. Σχεδιάζουμε τα widgets δίνοντας ως default τη μνήμη (session_state)
+date_range = st.sidebar.date_input("📅 Ημερομηνίες", value=st.session_state['dates'])
+sel_proj = st.sidebar.multiselect("📁 Project", options=sorted(df["Project"].unique()), default=st.session_state['proj'])
+sel_auth = st.sidebar.multiselect("👤 Assignee", options=sorted(df["Assignee"].unique()), default=st.session_state['auth'])
+sel_charge = st.sidebar.multiselect("💰 Charge Type", options=sorted(df["Charge Type"].unique()), default=st.session_state['charge'])
+sel_time = st.sidebar.multiselect("⏱️ Time Type", options=sorted(df["Time Type"].unique()), default=st.session_state['time'])
 
-# 3. ΕΝΗΜΕΡΩΣΗ URL: Γράφουμε τις επιλογές στο URL για να μπορείς να τις κάνεις Share
+# 3. Αποθηκεύουμε τις νέες επιλογές πίσω στη Μνήμη & στο URL
+st.session_state['dates'] = date_range
+st.session_state['proj'] = sel_proj
+st.session_state['auth'] = sel_auth
+st.session_state['charge'] = sel_charge
+st.session_state['time'] = sel_time
+
 st.query_params["dateRange"] = [str(d) for d in date_range] 
 st.query_params["project"] = sel_proj
 st.query_params["Assignee"] = sel_auth
@@ -126,10 +162,18 @@ m4.metric("Μοναδικά Tickets", filtered_df["Issue Key"].nunique())
 # --- Ενότητα Β: Pivot Table & Export ---
 st.subheader("📅 Αναλυτικό Timesheet", divider="gray")
 
-# 1. Φίλτρο Ομαδοποίησης (Με τη χρήση του key="group_key" και χωρίς default)
+# Εφαρμόζουμε την ίδια λογική (Session State) ΚΑΙ στο Group By
 group_options = ["Assignee", "Parent Key", "Issue Key", "Project", "Time Type", "Charge Type"]
 
-sel_group = st.multiselect("🗂️ Ομαδοποίηση (Group By) ανά:", options=group_options, key="group_key")
+if "group_initialized" not in st.session_state:
+    url_group = st.query_params.get_all("groupBy")
+    valid_group = [g for g in url_group if g in group_options]
+    st.session_state['group_by'] = valid_group if valid_group else ["Assignee", "Parent Key"]
+
+sel_group = st.multiselect("🗂️ Ομαδοποίηση (Group By) ανά:", options=group_options, default=st.session_state['group_by'])
+
+# Αποθήκευση σε Μνήμη & URL
+st.session_state['group_by'] = sel_group
 st.query_params["groupBy"] = sel_group
 
 if not sel_group:
@@ -235,52 +279,20 @@ if not filtered_df.empty:
 else:
     st.info("Δεν υπάρχουν δεδομένα για τα επιλεγμένα φίλτρα.")
 
-# --- Ενότητα Γ: Γραφήματα ---
+# Ενότητα Γ: Γραφήματα
 st.write("---")
 st.subheader("📈 Γραφήματα Ανάλυσης", divider="gray")
-
-# --- 1. Γραφήματα Πίτας (Side-by-Side) ---
 c1, c2 = st.columns(2)
 
 with c1:
-    chart_time = filtered_df.groupby("Time Type")["Minutes"].sum().reset_index()
-    fig_time = px.pie(chart_time, 
-                      values="Minutes", 
-                      names="Time Type", 
-                      hole=0.4, 
-                      title="⏳ Αναλογία ανά Time Type",
-                      color_discrete_sequence=px.colors.sequential.Oranges_r)
-    fig_time.update_traces(textposition='inside', textinfo='percent+label')
-    fig_time.update_layout(height=400, showlegend=False) # Κρύβουμε το legend για εξοικονόμηση χώρου
-    st.plotly_chart(fig_time, use_container_width=True)
+    comp_df = filtered_df.explode("Components")
+    chart_comp = comp_df.groupby("Components")["Minutes"].sum().reset_index().sort_values("Minutes")
+    fig_comp = px.bar(chart_comp, x="Minutes", y="Components", orientation='h', 
+                      title="Time Distribution per Component", color_discrete_sequence=['#0078D4'])
+    st.plotly_chart(fig_comp, width='stretch')
 
 with c2:
-    chart_charge = filtered_df.groupby("Charge Type")["Minutes"].sum().reset_index()
-    fig_charge = px.pie(chart_charge, 
-                        values="Minutes", 
-                        names="Charge Type", 
-                        hole=0.4, 
-                        title="💰 Αναλογία ανά Charge Type",
-                        color_discrete_sequence=px.colors.sequential.Greens_r) # Πράσινο theme
-    fig_charge.update_traces(textposition='inside', textinfo='percent+label')
-    fig_charge.update_layout(height=400, showlegend=False)
-    st.plotly_chart(fig_charge, use_container_width=True)
-
-# --- 2. Γράφημα Κατηγοριών (Full Width - Οριζόντιες Μπάρες) ---
-st.write("<br>", unsafe_allow_html=True) 
-
-# Η στήλη 'Parent Category' έρχεται πλέον ΕΤΟΙΜΗ από τη βάση δεδομένων!
-# Οπότε κάνουμε απλά ένα groupby, όπως ακριβώς κάνουμε και στα Time Types.
-chart_parent = filtered_df.groupby("Parent Category")["Minutes"].sum().reset_index().sort_values("Minutes")
-
-fig_comp = px.bar(chart_parent, 
-                  x="Minutes", 
-                  y="Parent Category", 
-                  orientation='h', 
-                  title="⏱️ Time Distribution per Main Category", 
-                  color_discrete_sequence=['#0078D4'],
-                  labels={"Parent Category": "Κατηγορία", "Minutes": "Λεπτά"}
-                 )
-
-fig_comp.update_layout(height=800) 
-st.plotly_chart(fig_comp, use_container_width=True)
+    chart_time = filtered_df.groupby("Time Type")["Minutes"].sum().reset_index().sort_values("Minutes")
+    fig_time = px.bar(chart_time, x="Minutes", y="Time Type", orientation='h', 
+                      title="Minutes per Time Type", color_discrete_sequence=['#D83B01'])
+    st.plotly_chart(fig_time, width='stretch')
