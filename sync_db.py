@@ -63,7 +63,7 @@ try:
         if page_token:
             params["nextPageToken"] = page_token
             
-        response = requests.get(BASE_URL, params=params, headers=headers)
+        response = requests.get(BASE_URL, params=params, headers=headers, timeout=30)
         
         if not response.ok:
             logging.error(f"❌ Σφάλμα API {response.status_code}: {response.text}")
