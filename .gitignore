@@ -1,9 +1,10 @@
 # Ασφάλεια
 .streamlit/secrets.toml
 
-#Logs and Backups
+#Logs, Backups & DB
 logs/
 Backups/
+timesheet.db
 
 # Python
 __pycache__/

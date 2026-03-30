@@ -206,14 +206,29 @@ if not filtered_df.empty:
         return styles
 
     styled_pivot = pivot_fmt.style.apply(highlight_cells, axis=1)
+
+    total_cells = pivot_fmt.size 
+    max_allowed_cells = 200000 
+
+    if total_cells > max_allowed_cells:
+        st.warning("⚠️ **Πάρα πολλά δεδομένα για προβολή!**\n\nΟ πίνακας περιέχει πάνω από τον επιτρεπτό αριθμό εγγραφών, κάτι που μπορεί να καθυστερήσει την εφαρμογή. Παρακαλώ χρησιμοποιήστε τα **Φίλτρα** (π.χ. επιλέξτε συγκεκριμένα Projects, Assignees ή ένα μικρότερο εύρος Ημερομηνιών) για να δείτε τα αποτελέσματα.")
+    else:
+        # Αν τα κελιά είναι σε φυσιολογικά πλαίσια, εμφανίζουμε κανονικά τον πίνακα
+        st.dataframe(
+            styled_pivot,
+            width='stretch',
+            height=500, 
+            column_config=col_config,
+            hide_index=True
+        )
     
-    st.dataframe(
-        styled_pivot, 
-        width='stretch', 
-        height=500, 
-        column_config=col_config, 
-        hide_index=True
-    )
+    # st.dataframe(
+    #     styled_pivot, 
+    #     width='stretch', 
+    #     height=500, 
+    #     column_config=col_config, 
+    #     hide_index=True
+    # )
     
     # 2. Τοποθέτηση του Download Button στα Δεξιά
     def convert_df_to_excel(df_styled):
