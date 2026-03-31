@@ -1,2 +1,16 @@
 [theme]
 base = "light"
+# Το κύριο χρώμα (π.χ. για τα κουμπιά, τις μπάρες, και το focus)
+primaryColor = "#475569" 
+
+# Το χρώμα του κυρίως background
+backgroundColor = "#F8FAFC" 
+
+# Το χρώμα του Sidebar και των εσωτερικών "κουτιών"
+secondaryBackgroundColor = "#F1F5F9" 
+
+# Το χρώμα του κειμένου
+textColor = "#0F172A" 
+
+# Η γραμματοσειρά (sans serif για πιο μοντέρνο look)
+font = "sans serif"
