@@ -5,9 +5,10 @@ import plotly.express as px
 import io
 import sqlite3
 import os
+import re
 from datetime import datetime
 
-APP_VERSION = "26.1.2 (2026-03-31)"
+APP_VERSION = "26.2.2 (2026-05-08)"
 
 # --- 1. Ρυθμίσεις Σελίδας ---
 st.set_page_config(layout="wide", page_title="NSS Timesheet Dashboard", page_icon="📊")
@@ -111,13 +112,20 @@ if "filters_init" not in st.session_state:
     all_auth = sorted([str(x) for x in df["Assignee"].dropna().unique()])
     all_charge = sorted([str(x) for x in df["Charge Type"].dropna().unique()])
     all_time = sorted([str(x) for x in df["Time Type"].dropna().unique()])
+    # ΝΕΑ ΠΕΔΙΑ:
+    all_partner = sorted([str(x) for x in df["Partner Name"].dropna().unique()]) if "Partner Name" in df.columns else []
+    all_lsp = sorted([str(x) for x in df["LSP Customer Name"].dropna().unique()]) if "LSP Customer Name" in df.columns else []
     
     # Αποθηκεύουμε τα defaults στα keys. 
-    # Αν το URL έχει τιμές, τις παίρνουμε (ταξινομημένες), αλλιώς βάζουμε τα πάντα (ήδη ταξινομημένα).
     st.session_state['proj_key'] = sorted(url_params.get_all("project")) if url_params.get_all("project") else all_proj
     st.session_state['auth_key'] = sorted(url_params.get_all("Assignee")) if url_params.get_all("Assignee") else all_auth
     st.session_state['charge_key'] = sorted(url_params.get_all("charge")) if url_params.get_all("charge") else all_charge
     st.session_state['time_key'] = sorted(url_params.get_all("time")) if url_params.get_all("time") else all_time
+    # ΝΕΑ ΠΕΔΙΑ:
+    st.session_state['partner_key'] = sorted(url_params.get_all("partner")) if url_params.get_all("partner") else all_partner
+    st.session_state['lsp_key'] = sorted(url_params.get_all("lsp")) if url_params.get_all("lsp") else all_lsp
+        
+    st.session_state['comp_key'] = sorted(url_params.get_all("component")) if url_params.get_all("component") else all_comp
     
     raw_dates = url_params.get_all("dateRange")
     if raw_dates:
@@ -125,7 +133,8 @@ if "filters_init" not in st.session_state:
     else:
         st.session_state['dates_key'] = [pd.to_datetime(df['Date']).min(), pd.to_datetime(df['Date']).max()]
         
-    group_options = ["Assignee", "Parent Key", "Issue Key", "Project", "Time Type", "Charge Type"]
+    # Προσθέσαμε τα νέα πεδία στις επιλογές ομαδοποίησης!
+    group_options = ["Assignee", "Parent Key", "Issue Key", "Project", "Time Type", "Charge Type", "Partner Name", "LSP Customer Name"]
     url_group = url_params.get_all("groupBy")
     valid_group = [g for g in url_group if g in group_options]
     st.session_state['group_key'] = valid_group if valid_group else ["Assignee"]
@@ -133,11 +142,34 @@ if "filters_init" not in st.session_state:
     st.session_state["filters_init"] = True
 
 # 2. WIDGETS: Χρησιμοποιούμε τις ταξινομημένες λίστες στα options
+if "Parent Category" in df.columns:
+    nested_comps = df["Parent Category"].dropna().apply(lambda x: [c.strip() for c in x.split(",")])
+    all_comps_flat = set([item for sublist in nested_comps for item in sublist])
+    all_comp = sorted(list(all_comps_flat))
+else:
+    all_comp = []
+
 date_range = st.sidebar.date_input("📅 Ημερομηνίες", key="dates_key")
 sel_proj = st.sidebar.multiselect("📁 Project", options=sorted([str(x) for x in df["Project"].dropna().unique()]), key="proj_key")
 sel_auth = st.sidebar.multiselect("👤 Assignee", options=sorted([str(x) for x in df["Assignee"].dropna().unique()]), key="auth_key")
 sel_charge = st.sidebar.multiselect("💰 Charge Type", options=sorted([str(x) for x in df["Charge Type"].dropna().unique()]), key="charge_key")
 sel_time = st.sidebar.multiselect("⏱️ Time Type", options=sorted([str(x) for x in df["Time Type"].dropna().unique()]), key="time_key")
+
+# ΝΕΑ WIDGETS:
+if "Partner Name" in df.columns:
+    sel_partner = st.sidebar.multiselect("🤝 Partner Name", options=sorted([str(x) for x in df["Partner Name"].dropna().unique()]), key="partner_key")
+else:
+    sel_partner = []
+
+if "LSP Customer Name" in df.columns:
+    sel_lsp = st.sidebar.multiselect("🏢 LSP Customer", options=sorted([str(x) for x in df["LSP Customer Name"].dropna().unique()]), key="lsp_key")
+else:
+    sel_lsp = []
+
+if "Parent Category" in df.columns:
+    sel_comp = st.sidebar.multiselect("🧩 Κατηγορίες (Components)", options=all_comp, key="comp_key")
+else:
+    sel_comp = []
 
 st.sidebar.write("")
 st.sidebar.caption(f"**App Version:** {APP_VERSION}")
@@ -148,6 +180,9 @@ st.query_params["project"] = sel_proj
 st.query_params["Assignee"] = sel_auth
 st.query_params["charge"] = sel_charge
 st.query_params["time"] = sel_time
+st.query_params["partner"] = sel_partner
+st.query_params["lsp"] = sel_lsp
+st.query_params["component"] = sel_comp
 
 # Φιλτράρισμα Δεδομένων
 start = date_range[0].strftime('%Y-%m-%d')
@@ -156,6 +191,16 @@ end = date_range[1].strftime('%Y-%m-%d') if len(date_range) > 1 else start
 mask = (df["Date"] >= start) & (df["Date"] <= end) & \
        df["Project"].isin(sel_proj) & df["Assignee"].isin(sel_auth) & \
        df["Charge Type"].isin(sel_charge) & df["Time Type"].isin(sel_time)
+
+if "Partner Name" in df.columns:
+    mask = mask & df["Partner Name"].isin(sel_partner)
+if "LSP Customer Name" in df.columns:
+    mask = mask & df["LSP Customer Name"].isin(sel_lsp)
+
+if "Parent Category" in df.columns and sel_comp:
+# Φτιάχνει ένα pattern τύπου: "Frontend|Backend" (Δηλαδή ψάχνει είτε το ένα είτε το άλλο)
+    pattern = '|'.join([re.escape(c) for c in sel_comp])
+    mask = mask & df["Parent Category"].str.contains(pattern, case=False, na=False)
 
 filtered_df = df[mask]
 
@@ -181,7 +226,8 @@ m4.metric("Μοναδικά Tickets", filtered_df["Issue Key"].nunique())
 # --- Ενότητα Β: Pivot Table & Export ---
 st.subheader("📅 Αναλυτικό Timesheet", divider="gray")
 
-group_options = ["Assignee", "Parent Key", "Issue Key", "Project", "Time Type", "Charge Type"]
+# Ενημερωμένη λίστα ομαδοποίησης με τα νέα πεδία
+group_options = ["Assignee", "Parent Key", "Issue Key", "Project", "Time Type", "Charge Type", "Partner Name", "LSP Customer Name"]
 sel_group = st.multiselect("🗂️ Ομαδοποίηση (Group By) ανά:", options=group_options, key="group_key")
 st.query_params["groupBy"] = sel_group
 
@@ -205,7 +251,16 @@ if not filtered_df.empty:
     
     col_config = {}
     if "Issue Key" in pivot_fmt.columns:
-        col_config["Issue Key"] = None 
+        jira_base = f"https://{JIRA_DOMAIN}/browse/"
+        pivot_fmt["🔗 Link"] = pivot_fmt["Issue Key"].apply(
+            lambda x: f"{jira_base}{x}" if x and x != "Σύνολο" else None
+        )
+        cols = list(pivot_fmt.columns)
+        cols.remove("🔗 Link")
+        pk_index = cols.index("Issue Key")
+        cols.insert(pk_index + 1, "🔗 Link")
+        pivot_fmt = pivot_fmt[cols]
+        col_config["🔗 Link"] = st.column_config.LinkColumn("Άνοιγμα", display_text="Issue URL") 
 
     if "Parent Key" in sel_group:
         jira_base = f"https://{JIRA_DOMAIN}/browse/"
@@ -217,7 +272,7 @@ if not filtered_df.empty:
         pk_index = cols.index("Parent Key")
         cols.insert(pk_index + 1, "🔗 Link")
         pivot_fmt = pivot_fmt[cols]
-        col_config["🔗 Link"] = st.column_config.LinkColumn("Άνοιγμα", display_text="Issue URL")
+        col_config["🔗 Link"] = st.column_config.LinkColumn("Άνοιγμα", display_text="Parent URL")
 
     def highlight_cells(row):
         styles = [''] * len(row)
