@@ -125,7 +125,7 @@ if "filters_init" not in st.session_state:
     st.session_state['partner_key'] = sorted(url_params.get_all("partner")) if url_params.get_all("partner") else all_partner
     st.session_state['lsp_key'] = sorted(url_params.get_all("lsp")) if url_params.get_all("lsp") else all_lsp
         
-    st.session_state['comp_key'] = sorted(url_params.get_all("component")) if url_params.get_all("component") else all_comp
+    # st.session_state['comp_key'] = sorted(url_params.get_all("category")) if url_params.get_all("category") else []
     
     raw_dates = url_params.get_all("dateRange")
     if raw_dates:
@@ -142,12 +142,12 @@ if "filters_init" not in st.session_state:
     st.session_state["filters_init"] = True
 
 # 2. WIDGETS: Χρησιμοποιούμε τις ταξινομημένες λίστες στα options
-if "Parent Category" in df.columns:
-    nested_comps = df["Parent Category"].dropna().apply(lambda x: [c.strip() for c in x.split(",")])
-    all_comps_flat = set([item for sublist in nested_comps for item in sublist])
-    all_comp = sorted(list(all_comps_flat))
-else:
-    all_comp = []
+# if "Parent Category" in df.columns:
+#     nested_comps = df["Parent Category"].dropna().apply(lambda x: [c.strip() for c in x.split(",")])
+#     all_comps_flat = set([item for sublist in nested_comps for item in sublist])
+#     all_comp = sorted(list(all_comps_flat))
+# else:
+#     all_comp = []
 
 date_range = st.sidebar.date_input("📅 Ημερομηνίες", key="dates_key")
 sel_proj = st.sidebar.multiselect("📁 Project", options=sorted([str(x) for x in df["Project"].dropna().unique()]), key="proj_key")
@@ -166,10 +166,10 @@ if "LSP Customer Name" in df.columns:
 else:
     sel_lsp = []
 
-if "Parent Category" in df.columns:
-    sel_comp = st.sidebar.multiselect("🧩 Κατηγορίες (Components)", options=all_comp, key="comp_key")
-else:
-    sel_comp = []
+# if "Parent Category" in df.columns:
+#     sel_comp = st.sidebar.multiselect("🧩 Κατηγορίες (Components)", options=all_comp, key="comp_key")
+# else:
+#     sel_comp = []
 
 st.sidebar.write("")
 st.sidebar.caption(f"**App Version:** {APP_VERSION}")
@@ -182,7 +182,7 @@ st.query_params["charge"] = sel_charge
 st.query_params["time"] = sel_time
 st.query_params["partner"] = sel_partner
 st.query_params["lsp"] = sel_lsp
-st.query_params["component"] = sel_comp
+# st.query_params["category"] = sel_comp
 
 # Φιλτράρισμα Δεδομένων
 start = date_range[0].strftime('%Y-%m-%d')
@@ -197,10 +197,10 @@ if "Partner Name" in df.columns:
 if "LSP Customer Name" in df.columns:
     mask = mask & df["LSP Customer Name"].isin(sel_lsp)
 
-if "Parent Category" in df.columns and sel_comp:
-# Φτιάχνει ένα pattern τύπου: "Frontend|Backend" (Δηλαδή ψάχνει είτε το ένα είτε το άλλο)
-    pattern = '|'.join([re.escape(c) for c in sel_comp])
-    mask = mask & df["Parent Category"].str.contains(pattern, case=False, na=False)
+# if "Parent Category" in df.columns and sel_comp:
+# # Φτιάχνει ένα pattern τύπου: "Frontend|Backend" (Δηλαδή ψάχνει είτε το ένα είτε το άλλο)
+#     pattern = '|'.join([re.escape(c) for c in sel_comp])
+#     mask = mask & df["Parent Category"].str.contains(pattern, case=False, na=False)
 
 filtered_df = df[mask]
 
@@ -226,8 +226,8 @@ m4.metric("Μοναδικά Tickets", filtered_df["Issue Key"].nunique())
 # --- Ενότητα Β: Pivot Table & Export ---
 st.subheader("📅 Αναλυτικό Timesheet", divider="gray")
 
-# Ενημερωμένη λίστα ομαδοποίησης με τα νέα πεδία
-group_options = ["Assignee", "Parent Key", "Issue Key", "Project", "Time Type", "Charge Type", "Partner Name", "LSP Customer Name"]
+# 1. Προσθέτουμε το Parent Title στις επιλογές (αν θέλει ο χρήστης να το επιλέξει μόνο του)
+group_options = ["Assignee", "Parent Key", "Parent Title", "Issue Key", "Project", "Time Type", "Charge Type", "Partner Name", "LSP Customer Name"]
 sel_group = st.multiselect("🗂️ Ομαδοποίηση (Group By) ανά:", options=group_options, key="group_key")
 st.query_params["groupBy"] = sel_group
 
@@ -236,8 +236,14 @@ if not sel_group:
     st.stop()
 
 if not filtered_df.empty:
+    # ΑΥΤΟΜΑΤΙΣΜΟΣ: Αν επιλεγεί το Parent Key, προσθέτουμε το Parent Title στην ομαδοποίηση 
+    # αν δεν το έχει επιλέξει ήδη ο χρήστης, για να έχουμε την πληροφορία διαθέσιμη.
+    pivot_groups = sel_group.copy()
+    if "Parent Key" in sel_group and "Parent Title" in filtered_df.columns and "Parent Title" not in sel_group:
+        pivot_groups.append("Parent Title")
+
     pivot = filtered_df.pivot_table(
-        index=sel_group, 
+        index=pivot_groups, # Χρησιμοποιούμε τη διευρυμένη λίστα
         columns="Date",
         values="Minutes",
         aggfunc="sum",
@@ -250,6 +256,8 @@ if not filtered_df.empty:
     pivot_fmt = pivot_fmt.reset_index()
     
     col_config = {}
+
+    # Διαχείριση Issue Key Link
     if "Issue Key" in pivot_fmt.columns:
         jira_base = f"https://{JIRA_DOMAIN}/browse/"
         pivot_fmt["🔗 Link"] = pivot_fmt["Issue Key"].apply(
@@ -257,32 +265,53 @@ if not filtered_df.empty:
         )
         cols = list(pivot_fmt.columns)
         cols.remove("🔗 Link")
-        pk_index = cols.index("Issue Key")
-        cols.insert(pk_index + 1, "🔗 Link")
+        idx = cols.index("Issue Key")
+        cols.insert(idx + 1, "🔗 Link")
         pivot_fmt = pivot_fmt[cols]
         col_config["🔗 Link"] = st.column_config.LinkColumn("Άνοιγμα", display_text="Issue URL") 
 
-    if "Parent Key" in sel_group:
+    # Διαχείριση Parent Key & Title
+    if "Parent Key" in pivot_fmt.columns:
         jira_base = f"https://{JIRA_DOMAIN}/browse/"
-        pivot_fmt["🔗 Link"] = pivot_fmt["Parent Key"].apply(
-            lambda x: f"{jira_base}{x}" if x and x != "Σύνολο" else None
+        
+        # Αν υπάρχει το Parent Title, το μεταφέρουμε δίπλα στο Parent Key
+        if "Parent Title" in pivot_fmt.columns:
+            cols = list(pivot_fmt.columns)
+            cols.remove("Parent Title")
+            pk_idx = cols.index("Parent Key")
+            cols.insert(pk_idx + 1, "Parent Title") # Το βάζουμε αμέσως μετά το Key
+            pivot_fmt = pivot_fmt[cols]
+            # Μπορούμε να ορίσουμε και πλάτος για να μην πιάνει πολύ χώρο αν είναι μεγάλο το title
+            col_config["Parent Title"] = st.column_config.TextColumn("Τίτλος Parent", width="medium")
+
+        # Δημιουργία Link για το Parent
+        # Χρησιμοποιούμε ένα μοναδικό όνομα για το link αν υπάρχει ήδη το Issue Link
+        link_col_name = "🔗 Parent Link" 
+        pivot_fmt[link_col_name] = pivot_fmt["Parent Key"].apply(
+            lambda x: f"{jira_base}{x}" if x and x != "Σύνολο" and x != "N/A" else None
         )
+        
         cols = list(pivot_fmt.columns)
-        cols.remove("🔗 Link")
-        pk_index = cols.index("Parent Key")
-        cols.insert(pk_index + 1, "🔗 Link")
+        cols.remove(link_col_name)
+        # Τοποθέτηση του Link μετά το Title (ή μετά το Key αν δεν υπάρχει Title)
+        ref_col = "Parent Title" if "Parent Title" in pivot_fmt.columns else "Parent Key"
+        target_idx = cols.index(ref_col)
+        cols.insert(target_idx + 1, link_col_name)
         pivot_fmt = pivot_fmt[cols]
-        col_config["🔗 Link"] = st.column_config.LinkColumn("Άνοιγμα", display_text="Parent URL")
+        
+        col_config[link_col_name] = st.column_config.LinkColumn("Parent", display_text="Open")
 
     def highlight_cells(row):
         styles = [''] * len(row)
+        # Προσοχή: Το sel_group[0] παραμένει το κριτήριο για τη γραμμή "Σύνολο"
         is_total_row = row[sel_group[0]] == 'Σύνολο'
         for i, col in enumerate(row.index):
             val = row[col]
             cell_style = ''
             if is_total_row or col == 'Σύνολο':
                 cell_style = 'font-weight: bold; background-color: #E2E8F0; color: #1E293B;' 
-            elif col in sel_group:
+            # Χρωματίζουμε ως headers όλες τις στήλες που ανήκουν στην ομαδοποίηση (συμπεριλαμβανομένου του Title)
+            elif col in pivot_groups:
                 cell_style = 'background-color: #F8FAFC; font-weight: 500;'
             else:
                 if isinstance(val, str) and ':' in val:
@@ -295,19 +324,18 @@ if not filtered_df.empty:
             styles[i] = cell_style
         return styles
 
-    # --- ΒΕΛΤΙΩΣΗ 1 & 2: Έλεγχος μεγέθους ΠΡΙΝ το styling ---
+    # --- Έλεγχος μεγέθους και Εμφάνιση ---
     total_cells = pivot_fmt.size 
     max_allowed_cells = 200000 
 
     if total_cells > max_allowed_cells:
-        st.warning("⚠️ **Πάρα πολλά δεδομένα για προβολή!**\n\nΟ πίνακας περιέχει πάνω από τον επιτρεπτό αριθμό εγγραφών, κάτι που μπορεί να καθυστερήσει την εφαρμογή. Παρακαλώ χρησιμοποιήστε τα **Φίλτρα** για να δείτε τα αποτελέσματα.")
+        st.warning("⚠️ **Πάρα πολλά δεδομένα για προβολή!**")
     else:
-        # Κάνουμε styling ΜΟΝΟ αν πρόκειται να το δείξουμε
         styled_pivot = pivot_fmt.style.apply(highlight_cells, axis=1)
         st.dataframe(
             styled_pivot,
             width='stretch',
-            height=500, 
+            height=600, # Αυξάνω λίγο το ύψος καθώς οι γραμμές μπορεί να μεγαλώσουν λόγω τίτλων
             column_config=col_config,
             hide_index=True
         )

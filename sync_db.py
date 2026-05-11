@@ -103,97 +103,112 @@ except Exception as e:
 
 
 # --- 3.5 Λήψη Δεδομένων Parent Issues (Bulk Fetching) ---
-# Μαζεύουμε όλα τα μοναδικά Parent Keys για να τα ζητήσουμε μαζικά
-unique_parents = set()
-for issue in all_issues:
-    pk = issue.get("fields", {}).get("parent", {}).get("key")
-    if pk:
-        unique_parents.add(pk)
+try:
+    unique_parents = set()
+    for issue in all_issues:
+        pk = issue.get("fields", {}).get("parent", {}).get("key")
+        if pk:
+            unique_parents.add(pk)
 
-parent_fields_dict = {} # Εδώ θα αποθηκεύσουμε τα custom fields κάθε Parent
-if unique_parents:
-    logging.info(f"🔍 Εντοπίστηκαν {len(unique_parents)} μοναδικά Parent Issues. Λήψη των Custom Fields...")
-    unique_parents_list = list(unique_parents)
-    
-    # Χωρίζουμε τα keys σε "πακέτα" των 100 για να μην παραπονεθεί το Jira για τεράστιο URL
-    chunk_size = 100
-    for i in range(0, len(unique_parents_list), chunk_size):
-        chunk = unique_parents_list[i:i + chunk_size]
+    parent_fields_dict = {}
+    if unique_parents:
+        logging.info(f"🔍 Εντοπίστηκαν {len(unique_parents)} μοναδικά Parent Issues. Λήψη των Custom Fields...")
+        unique_parents_list = list(unique_parents)
         
-        # JQL: key IN (PARENT-1, PARENT-2, ...)
-        jql_parents = f'key IN ({",".join(chunk)})'
-        params_parents = {
-            "jql": jql_parents, 
-            "fields": "customfield_11180,customfield_11183", 
-            "maxResults": chunk_size
-        }
-        
-        resp_parents = requests.get(BASE_URL, params=params_parents, headers=headers, timeout=60)
-        if resp_parents.ok:
-            parents_data = resp_parents.json().get("issues", [])
-            for p in parents_data:
-                parent_fields_dict[p["key"]] = p.get("fields", {})
-        else:
-            logging.warning(f"⚠️ Αποτυχία λήψης Parent chunk: {resp_parents.text}")
+        # Μείωση σε 50 για να μην "σκάει" το API με Timeout ή "URI Too Long"
+        chunk_size = 50 
+        for i in range(0, len(unique_parents_list), chunk_size):
+            chunk = unique_parents_list[i:i + chunk_size]
+            
+            # Βάζουμε διπλά εισαγωγικά σε κάθε Key για ασφάλεια (π.χ. "PROJ-1", "PROJ-2")
+            safe_keys = ",".join([f'"{c}"' for c in chunk])
+            jql_parents = f'key IN ({safe_keys})'
+            
+            params_parents = {
+                "jql": jql_parents, 
+                "fields": "summary,customfield_11180,customfield_11183", 
+                "maxResults": chunk_size
+            }
+            
+            resp_parents = requests.get(BASE_URL, params=params_parents, headers=headers, timeout=60)
+            if resp_parents.ok:
+                parents_data = resp_parents.json().get("issues", [])
+                for p in parents_data:
+                    parent_fields_dict[p["key"]] = p.get("fields", {})
+            else:
+                logging.warning(f"⚠️ Αποτυχία λήψης Parent chunk: {resp_parents.text}")
+                
+    logging.info("✅ Η λήψη των Parent Custom Fields ολοκληρώθηκε.")
+
+except Exception as e:
+    # Το exc_info=True θα τυπώσει στο log ΟΛΟ το traceback (ποια γραμμή έσκασε)
+    logging.error(f"❌ Κρίσιμο σφάλμα κατά τη λήψη των Parent Issues: {e}", exc_info=True)
+    sys.exit(1)
 
 
 # --- 4. Μετασχηματισμός (Transform) ---
-# Βελτιωμένη safe_get για να μην "σκάει" αν το custom field δεν έχει 'value'
-def safe_get(data, key, subkey="value", default="N/A"):
-    item = data.get(key)
-    if isinstance(item, dict):
-        return item.get(subkey, default)
-    elif item is not None:
-        return str(item)
-    return default
-
-rows = []
-for issue in all_issues:
-    f = issue.get("fields", {})
-    project = f.get("project", {}).get("name", "N/A")
-    time_type = safe_get(f, "customfield_10553")
-    charge_type = safe_get(f, "customfield_10193")
-    parent_key = f.get("parent", {}).get("key", "N/A")
-
-    # --- Ανάγνωση των νέων πεδίων από το Parent Dictionary ---
-    cf_11180_val = "N/A"
-    cf_11183_val = "N/A"
-    if parent_key in parent_fields_dict:
-        p_fields = parent_fields_dict[parent_key]
-        cf_11180_val = safe_get(p_fields, "customfield_11180")
-        cf_11183_val = safe_get(p_fields, "customfield_11183")
-
-    jira_components = f.get("components", [])
+try:
+    logging.info("⚙️ Ξεκινάει ο μετασχηματισμός των δεδομένων...")
     
-    # Φτιάχνουμε μια λίστα με τα ονόματα όλων των components του ticket
-    comp_names = [c.get("name").strip() for c in jira_components if c.get("name")]
-    
-    # Τα ενώνουμε με κόμμα (π.χ. "Frontend, Backend")
-    components_str = ", ".join(comp_names) if comp_names else "No Component"
-    
-    # (Κρατάμε το parent_category όπως ήταν αν το χρησιμοποιείς κάπου, αλλιώς το διαγράφεις)
-    parent_category = "No Component"
-    if jira_components:
-        c = jira_components[0]
-        parent_category = c.get("description", "").strip() or c.get("name")
+    def safe_get(data, key, subkey="value", default="N/A"):
+        item = data.get(key)
+        if isinstance(item, dict):
+            return item.get(subkey, default)
+        elif item is not None:
+            return str(item)
+        return default
+
+    rows = []
+    for issue in all_issues:
+        f = issue.get("fields", {})
+        project = f.get("project", {}).get("name", "N/A")
+        time_type = safe_get(f, "customfield_10553")
+        charge_type = safe_get(f, "customfield_10193")
+        parent_key = f.get("parent", {}).get("key", "N/A")
+
+        cf_11180_val = "N/A"
+        cf_11183_val = "N/A"
+        if parent_key in parent_fields_dict:
+            p_fields = parent_fields_dict[parent_key]
+            parent_title = p_fields.get("summary", {})
+            cf_11180_val = safe_get(p_fields, "customfield_11180")
+            cf_11183_val = safe_get(p_fields, "customfield_11183")
+
+        jira_components = f.get("components", [])
         
-    for wl in worklogs:
-        rows.append({
-            "Issue Key": issue["key"],
-            "Parent Key": parent_key,
-            "Project": project,
-            "Assignee": wl.get("author", {}).get("displayName", "Unknown"),
-            "Time Type": time_type,
-            "Charge Type": charge_type,
-            "Minutes": wl["timeSpentSeconds"] / 60,
-            "Date": wl["started"][:10],
-            "Parent Category": parent_category,
-            # Προσθήκη των νέων στηλών στη βάση
-            "Partner Name": cf_11180_val,
-            "LSP Customer Name": cf_11183_val
-        })
+        # Η νέα λογική για τα πολλαπλά components με κόμμα
+        comp_names = [c.get("name").strip() for c in jira_components if c.get("name")]
+        components_str = ", ".join(comp_names) if comp_names else "No Component"
+        
+        parent_category = "No Component"
+        if jira_components:
+            c = jira_components[0]
+            parent_category = c.get("description", "").strip() or c.get("name")
 
-df = pd.DataFrame(rows)
+        worklogs = f.get("worklog", {}).get("worklogs", [])
+        for wl in worklogs:
+            rows.append({
+                "Issue Key": issue["key"],
+                "Parent Key": parent_key,
+                "Parent Title": parent_title,
+                "Project": project,
+                "Assignee": wl.get("author", {}).get("displayName", "Unknown"),
+                "Time Type": time_type,
+                "Charge Type": charge_type,
+                "Minutes": wl["timeSpentSeconds"] / 60,
+                "Date": wl["started"][:10],
+                "Parent Category": parent_category,
+                "Components": components_str,
+                "Partner Name": cf_11180_val,
+                "LSP Customer Name": cf_11183_val
+            })
+
+    df = pd.DataFrame(rows)
+    logging.info(f"✅ Ο μετασχηματισμός ολοκληρώθηκε. Προετοιμασία εγγραφής στη βάση...")
+
+except Exception as e:
+    logging.error(f"❌ Κρίσιμο σφάλμα κατά τον μετασχηματισμό: {e}", exc_info=True)
+    sys.exit(1)
 
 # --- 5. Εγγραφή στη Βάση Δεδομένων (Load) ---
 try:
