@@ -17,6 +17,8 @@ CREATE TABLE Users (
     PasswordHash NVARCHAR(255) NOT NULL,
 	Email NVARCHAR(100) NOT NULL UNIQUE,
     RoleID INT NOT NULL,
+    DefaultProject NVARCHAR(100) NULL,
+    DisplayName NVARCHAR(255) NULL,
     IsActive BIT DEFAULT 1,
     CreatedAt DATETIME DEFAULT GETDATE(),
     
@@ -46,7 +48,15 @@ CREATE TABLE User_Presets (
     CONSTRAINT FK_Presets_Users FOREIGN KEY (UserID) REFERENCES Users(UserID) ON DELETE CASCADE
 );
 
--- 6. Πίνακας Καταγραφής Χρόνων (WorkLogs)
+-- 6. Συνεδρίες Χρηστών (Sessions για Remember Me)
+CREATE TABLE User_Sessions (
+    SessionID NVARCHAR(100) PRIMARY KEY,
+    UserID INT NOT NULL,
+    ExpiresAt DATETIME NOT NULL,
+    CONSTRAINT FK_Sessions_Users FOREIGN KEY (UserID) REFERENCES Users(UserID) ON DELETE CASCADE
+);
+
+-- 7. Πίνακας Καταγραφής Χρόνων (WorkLogs)
 CREATE TABLE WorkLogs (
     LogID BIGINT IDENTITY(1,1) PRIMARY KEY,
     IssueKey NVARCHAR(50) NOT NULL,

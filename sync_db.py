@@ -251,7 +251,8 @@ try:
         time_type = safe_get(f, "customfield_10553")
         charge_type = safe_get(f, "customfield_10193")
         parent_key = f.get("parent", {}).get("key", "N/A")
-        assignee = f.get("assignee", {})
+        assignee_obj = f.get("assignee")
+        assignee_name = assignee_obj.get("displayName", "Unassigned") if isinstance(assignee_obj, dict) else "Unassigned"
 
         cf_11180_val = "N/A"
         cf_11183_val = "N/A"
@@ -279,8 +280,7 @@ try:
                 "Parent Key": parent_key,
                 "Parent Title": parent_title,
                 "Project": project,
-                # "Assignee": assignee,
-                "Assignee": wl.get("author", {}).get("displayName", "Unknown"),
+                "Assignee": assignee_name,
                 "Time Type": time_type,
                 "Charge Type": charge_type,
                 "Minutes": wl["timeSpentSeconds"] / 60,
