@@ -3,12 +3,11 @@ import pandas as pd
 import requests
 import plotly.express as px
 import io
-import sqlite3
 import os
 import re
 from datetime import datetime
 
-APP_VERSION = "26.2.2 (2026-05-08)"
+APP_VERSION = "26.3.0 (2026-06-16)"
 
 # --- 1. Ρυθμίσεις Σελίδας ---
 st.set_page_config(layout="wide", page_title="NSS Timesheet Dashboard", page_icon="📊")
@@ -69,23 +68,93 @@ def format_to_hhmm(minutes):
     mins = int(minutes % 60)
     return f"{hours:02d}:{mins:02d}"
 
-# --- 2. Φόρτωση από Βάση Δεδομένων ---
-@st.cache_data(ttl=60) # Cache για 1 λεπτό μόνο, αφού η DB είναι αστραπιαία
+# --- 2. Φόρτωση από Βάση Δεδομένων (SQL Server) ---
+@st.cache_data(ttl=60) # Cache για 1 λεπτό
 def load_data_from_db():
-    db_path = "timesheet.db"
-    if not os.path.exists(db_path):
+    try:
+        # Έλεγχος αν υπάρχει το CONNECTION_STRING στα secrets
+        if "CONNECTION_STRING" not in st.secrets:
+            st.error("❌ Το CONNECTION_STRING λείπει από τα secrets.toml!")
+            return pd.DataFrame(), "Ποτέ"
+            
+        conn_str = st.secrets["CONNECTION_STRING"]
+        
+        # Ανάλυση connection string
+        parts = {}
+        for part in conn_str.split(";"):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                parts[k.strip().lower()] = v.strip()
+                
+        server = parts.get("data source", parts.get("server", ""))
+        database = parts.get("database", "")
+        uid = parts.get("user id", parts.get("uid", ""))
+        pwd = parts.get("password", parts.get("pwd", ""))
+        
+        if not server or not database:
+            st.error("❌ Τα πεδία Server και Database είναι υποχρεωτικά στο connection string!")
+            return pd.DataFrame(), "Ποτέ"
+            
+        import urllib.parse
+        from sqlalchemy import create_engine
+        
+        drivers = ["ODBC Driver 17 for SQL Server", "SQL Server Native Client 11.0", "SQL Server"]
+        engine = None
+        last_error = None
+        
+        for driver in drivers:
+            try:
+                pyodbc_conn_str = f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};"
+                if uid and pwd:
+                    pyodbc_conn_str += f"UID={uid};PWD={pwd};"
+                else:
+                    pyodbc_conn_str += "Trusted_Connection=yes;"
+                    
+                params = urllib.parse.quote_plus(pyodbc_conn_str)
+                temp_engine = create_engine(f"mssql+pyodbc:///?odbc_connect={params}")
+                
+                # Δοκιμή σύνδεσης
+                with temp_engine.connect() as conn:
+                    pass
+                engine = temp_engine
+                break
+            except Exception as ex:
+                last_error = ex
+                
+        if engine is None:
+            st.error(f"❌ Αποτυχία σύνδεσης στον SQL Server. Τελευταίο σφάλμα: {last_error}")
+            return pd.DataFrame(), "Ποτέ"
+            
+        # Φόρτωση από τον SQL Server
+        df = pd.read_sql("SELECT * FROM WorkLogs", engine)
+        
+        # Μετονομασία στηλών πίσω στη μορφή με κενά που περιμένει το UI
+        df = df.rename(columns={
+            "IssueKey": "Issue Key",
+            "ParentKey": "Parent Key",
+            "ParentTitle": "Parent Title",
+            "Project": "Project",
+            "Assignee": "Assignee",
+            "TimeType": "Time Type",
+            "ChargeType": "Charge Type",
+            "Minutes": "Minutes",
+            "WorkDate": "Date",
+            "ParentCategory": "Parent Category",
+            "Components": "Components",
+            "PartnerName": "Partner Name",
+            "LSPCustomerName": "LSP Customer Name"
+        })
+        
+        # Μετατροπή της στήλης Date σε string μορφής YYYY-MM-DD
+        if "Date" in df.columns:
+            df["Date"] = pd.to_datetime(df["Date"]).dt.strftime('%Y-%m-%d')
+            
+        last_updated = datetime.now().strftime("%d/%m/%Y %H:%M")
+        return df, last_updated
+        
+    except Exception as e:
+        st.error(f"❌ Σφάλμα κατά τη φόρτωση των δεδομένων: {e}")
         return pd.DataFrame(), "Ποτέ"
-    
-    # Ανάγνωση από SQLite
-    conn = sqlite3.connect(db_path)
-    df = pd.read_sql("SELECT * FROM worklogs", conn)
-    conn.close()
-    
-    # Διαβάζουμε την ώρα που τροποποιήθηκε το αρχείο DB
-    mtime = os.path.getmtime(db_path)
-    last_updated = datetime.fromtimestamp(mtime).strftime("%d/%m/%Y %H:%M")
-    
-    return df, last_updated
 
 df, last_updated = load_data_from_db()
 
@@ -115,6 +184,14 @@ if "filters_init" not in st.session_state:
     # ΝΕΑ ΠΕΔΙΑ:
     all_partner = sorted([str(x) for x in df["Partner Name"].dropna().unique()]) if "Partner Name" in df.columns else []
     all_lsp = sorted([str(x) for x in df["LSP Customer Name"].dropna().unique()]) if "LSP Customer Name" in df.columns else []
+
+    if "Parent Category" in df.columns:
+        nested_comps = df["Parent Category"].dropna().apply(lambda x: [c.strip() for c in x.split(",")])
+        all_comps_flat = set([item for sublist in nested_comps for item in sublist])
+        all_comp = sorted(list(all_comps_flat))
+    else:
+        all_comp = []
+
     
     # Αποθηκεύουμε τα defaults στα keys. 
     st.session_state['proj_key'] = sorted(url_params.get_all("project")) if url_params.get_all("project") else all_proj
@@ -125,7 +202,7 @@ if "filters_init" not in st.session_state:
     st.session_state['partner_key'] = sorted(url_params.get_all("partner")) if url_params.get_all("partner") else all_partner
     st.session_state['lsp_key'] = sorted(url_params.get_all("lsp")) if url_params.get_all("lsp") else all_lsp
         
-    # st.session_state['comp_key'] = sorted(url_params.get_all("category")) if url_params.get_all("category") else []
+    st.session_state['comp_key'] = sorted(url_params.get_all("category")) if url_params.get_all("category") else all_comp
     
     raw_dates = url_params.get_all("dateRange")
     if raw_dates:
@@ -142,13 +219,6 @@ if "filters_init" not in st.session_state:
     st.session_state["filters_init"] = True
 
 # 2. WIDGETS: Χρησιμοποιούμε τις ταξινομημένες λίστες στα options
-# if "Parent Category" in df.columns:
-#     nested_comps = df["Parent Category"].dropna().apply(lambda x: [c.strip() for c in x.split(",")])
-#     all_comps_flat = set([item for sublist in nested_comps for item in sublist])
-#     all_comp = sorted(list(all_comps_flat))
-# else:
-#     all_comp = []
-
 date_range = st.sidebar.date_input("📅 Ημερομηνίες", key="dates_key")
 sel_proj = st.sidebar.multiselect("📁 Project", options=sorted([str(x) for x in df["Project"].dropna().unique()]), key="proj_key")
 sel_auth = st.sidebar.multiselect("👤 Assignee", options=sorted([str(x) for x in df["Assignee"].dropna().unique()]), key="auth_key")
@@ -166,10 +236,10 @@ if "LSP Customer Name" in df.columns:
 else:
     sel_lsp = []
 
-# if "Parent Category" in df.columns:
-#     sel_comp = st.sidebar.multiselect("🧩 Κατηγορίες (Components)", options=all_comp, key="comp_key")
-# else:
-#     sel_comp = []
+if "Parent Category" in df.columns:
+    sel_comp = st.sidebar.multiselect("🧩 Κατηγορίες (Components)", options=sorted([str(x) for x in df["Parent Category"].dropna().unique()]), key="comp_key")
+else:
+    sel_comp = []
 
 st.sidebar.write("")
 st.sidebar.caption(f"**App Version:** {APP_VERSION}")
@@ -180,8 +250,8 @@ st.query_params["project"] = sel_proj
 st.query_params["Assignee"] = sel_auth
 st.query_params["charge"] = sel_charge
 st.query_params["time"] = sel_time
-st.query_params["partner"] = sel_partner
-st.query_params["lsp"] = sel_lsp
+# st.query_params["partner"] = sel_partner
+# st.query_params["lsp"] = sel_lsp
 # st.query_params["category"] = sel_comp
 
 # Φιλτράρισμα Δεδομένων
@@ -197,10 +267,10 @@ if "Partner Name" in df.columns:
 if "LSP Customer Name" in df.columns:
     mask = mask & df["LSP Customer Name"].isin(sel_lsp)
 
-# if "Parent Category" in df.columns and sel_comp:
-# # Φτιάχνει ένα pattern τύπου: "Frontend|Backend" (Δηλαδή ψάχνει είτε το ένα είτε το άλλο)
-#     pattern = '|'.join([re.escape(c) for c in sel_comp])
-#     mask = mask & df["Parent Category"].str.contains(pattern, case=False, na=False)
+if "Parent Category" in df.columns and sel_comp:
+# Φτιάχνει ένα pattern τύπου: "Frontend|Backend" (Δηλαδή ψάχνει είτε το ένα είτε το άλλο)
+    pattern = '|'.join([re.escape(c) for c in sel_comp])
+    mask = mask & df["Parent Category"].str.contains(pattern, case=False, na=False)
 
 filtered_df = df[mask]
 

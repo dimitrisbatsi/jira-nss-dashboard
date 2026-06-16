@@ -1,12 +1,22 @@
 import tomllib
 import requests
-import sqlite3
 import pandas as pd
 import logging
 import sys
 import os 
 import pprint
+import urllib.parse
+import argparse
 from datetime import datetime
+from sqlalchemy import create_engine
+
+# --- Reconfigure console output encoding to UTF-8 for Greek/Emoji console display on Windows ---
+if sys.platform.startswith('win'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
 
 # --- 0. Ρύθμιση Logging (Ημερήσια Logs) ---
 # 1. Δημιουργία του φακέλου "logs" αν δεν υπάρχει ήδη
@@ -28,16 +38,86 @@ logging.basicConfig(
     ]
 )
 
-logging.info("🚀 Ξεκινάει ο κύκλος συγχρονισμού με το Jira...")
+APP_VERSION = "26.3.0 (2026-06-16)"
+logging.info(f"🚀 Ξεκινάει ο κύκλος συγχρονισμού με το Jira (v{APP_VERSION})...")
 
 # --- 1. Ανάγνωση Secrets & Καθαρισμός ---
 try:
     with open(".streamlit/secrets.toml", "rb") as f:
         secrets = tomllib.load(f)
     API_TOKEN = secrets["JIRA_JWT_TOKEN"].strip() 
+    CONNECTION_STRING = secrets.get("CONNECTION_STRING", "").strip()
+    if not CONNECTION_STRING:
+        raise ValueError("CONNECTION_STRING parameter is missing in secrets.toml")
 except Exception as e:
     logging.error(f"❌ Σφάλμα ανάγνωσης secrets: {e}")
     sys.exit(1)
+
+
+# --- 1.5 Command Line Arguments ---
+parser = argparse.ArgumentParser(description="Jira Worklogs to SQL Server Sync Script")
+parser.add_argument(
+    "--mode", 
+    choices=["incremental", "full"], 
+    default="incremental", 
+    help="Sync mode: 'incremental' (fetches only recently updated tickets and updates them) or 'full' (fully reloads all tickets)."
+)
+parser.add_argument(
+    "--days", 
+    type=int, 
+    default=7, 
+    help="Lookback days for incremental sync (ignored in full sync). Default is 7."
+)
+args = parser.parse_args()
+SYNC_MODE = args.mode
+LOOKBACK_DAYS = args.days
+
+logging.info(f"🔄 Sync Mode: {SYNC_MODE.upper()}" + (f" (Lookback: {LOOKBACK_DAYS} days)" if SYNC_MODE == "incremental" else ""))
+
+
+def create_db_engine(conn_str):
+    """
+    Δημιουργεί ένα SQLAlchemy engine για SQL Server αναλύοντας το connection string
+    και δοκιμάζοντας τους διαθέσιμους εγκατεστημένους ODBC drivers.
+    """
+    parts = {}
+    for part in conn_str.split(";"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            parts[k.strip().lower()] = v.strip()
+            
+    server = parts.get("data source", parts.get("server", ""))
+    database = parts.get("database", "")
+    uid = parts.get("user id", parts.get("uid", ""))
+    pwd = parts.get("password", parts.get("pwd", ""))
+    
+    if not server or not database:
+        raise ValueError("Τα πεδία Server και Database είναι υποχρεωτικά στο connection string.")
+        
+    drivers = ["ODBC Driver 17 for SQL Server", "SQL Server Native Client 11.0", "SQL Server"]
+    last_error = None
+    
+    for driver in drivers:
+        try:
+            pyodbc_conn_str = f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};"
+            if uid and pwd:
+                pyodbc_conn_str += f"UID={uid};PWD={pwd};"
+            else:
+                pyodbc_conn_str += "Trusted_Connection=yes;"
+                
+            params = urllib.parse.quote_plus(pyodbc_conn_str)
+            engine = create_engine(f"mssql+pyodbc:///?odbc_connect={params}")
+            
+            # Δοκιμή σύνδεσης
+            with engine.connect() as conn:
+                pass
+            logging.info(f"🔌 Επιτυχής σύνδεση με SQL Server χρησιμοποιώντας τον driver: {driver}")
+            return engine
+        except Exception as ex:
+            last_error = ex
+            logging.debug(f"Αποτυχία σύνδεσης με driver {driver}: {ex}")
+            
+    raise RuntimeError(f"Αποτυχία σύνδεσης με τον SQL Server. Τελευταίο σφάλμα: {last_error}")
 
 # --- 2. Στήσιμο URL ---
 JIRA_CLOUD_ID = "58c421e1-1855-4c95-8c07-df2d79817fdd"
@@ -54,7 +134,13 @@ page_token = ""
 max_results = 100 # Το επαναφέρουμε στο 100 (όχι 2) για ταχύτητα!
 total_issues = 0
 
-jql = 'project IN (PYLCOM, PYLFLE, GLXENT, ESLKAS, PYLACC, PYLHOS, ESLLEG, CLCNTR) AND issuetype = "Time Type" AND (status = "Time Entered" OR status = "Time-Entered") ORDER BY created DESC'
+jql = 'project IN (PYLCOM, PYLFLE, GLXENT, ESLKAS, PYLACC, PYLHOS, ESLLEG, CLCNTR, PLINTS) AND issuetype = "Time Type" AND (status = "Time Entered" OR status = "Time-Entered")'
+
+if SYNC_MODE == "incremental":
+    jql += f' AND updated >= -{LOOKBACK_DAYS}d'
+
+jql += ' ORDER BY created DESC'
+
 fields = "worklog,assignee,summary,project,components,customfield_10553,customfield_10193,parent"
 
 try:
@@ -165,6 +251,7 @@ try:
         time_type = safe_get(f, "customfield_10553")
         charge_type = safe_get(f, "customfield_10193")
         parent_key = f.get("parent", {}).get("key", "N/A")
+        assignee = f.get("assignee", {})
 
         cf_11180_val = "N/A"
         cf_11183_val = "N/A"
@@ -192,6 +279,7 @@ try:
                 "Parent Key": parent_key,
                 "Parent Title": parent_title,
                 "Project": project,
+                # "Assignee": assignee,
                 "Assignee": wl.get("author", {}).get("displayName", "Unknown"),
                 "Time Type": time_type,
                 "Charge Type": charge_type,
@@ -213,12 +301,57 @@ except Exception as e:
 # --- 5. Εγγραφή στη Βάση Δεδομένων (Load) ---
 try:
     if not df.empty:
-        conn = sqlite3.connect('timesheet.db')
-        df.to_sql('worklogs', conn, if_exists='replace', index=False)
-        conn.close()
-        logging.info(f"✅ Ο συγχρονισμός ολοκληρώθηκε! Αποθηκεύτηκαν {len(df)} εγγραφές.\n")
+        # Δημιουργία engine σύνδεσης με SQL Server
+        engine = create_db_engine(CONNECTION_STRING)
+        
+        # Μετονομασία στηλών για να ταιριάζουν με το schema του SQL Server
+        df_db = df.rename(columns={
+            "Issue Key": "IssueKey",
+            "Parent Key": "ParentKey",
+            "Parent Title": "ParentTitle",
+            "Project": "Project",
+            "Assignee": "Assignee",
+            "Time Type": "TimeType",
+            "Charge Type": "ChargeType",
+            "Minutes": "Minutes",
+            "Date": "WorkDate",
+            "Parent Category": "ParentCategory",
+            "Components": "Components",
+            "Partner Name": "PartnerName",
+            "LSP Customer Name": "LSPCustomerName"
+        })
+        
+        # Επιλογή στηλών που υπάρχουν στο schema του πίνακα WorkLogs
+        valid_cols = [
+            "IssueKey", "ParentKey", "ParentTitle", "Project", "Assignee",
+            "TimeType", "ChargeType", "Minutes", "WorkDate", "ParentCategory",
+            "Components", "PartnerName", "LSPCustomerName"
+        ]
+        df_db = df_db[[col for col in valid_cols if col in df_db.columns]]
+        
+        # Καθαρισμός και εγγραφή των δεδομένων στον SQL Server
+        with engine.begin() as transaction_conn:
+            if SYNC_MODE == "full":
+                transaction_conn.exec_driver_sql("TRUNCATE TABLE WorkLogs")
+                logging.info("🧹 Ο πίνακας WorkLogs καθαρίστηκε (TRUNCATE).")
+            else:
+                # Incremental mode: διαγράφουμε τις υπάρχουσες εγγραφές των tickets που επηρεάζονται
+                unique_keys = list(df_db["IssueKey"].dropna().unique())
+                if unique_keys:
+                    logging.info(f"🧹 Διαγραφή παλαιών εγγραφών για {len(unique_keys)} tickets...")
+                    chunk_size = 1000
+                    for i in range(0, len(unique_keys), chunk_size):
+                        chunk = unique_keys[i:i + chunk_size]
+                        keys_str = ",".join([f"'{k}'" for k in chunk])
+                        sql = f"DELETE FROM WorkLogs WHERE IssueKey IN ({keys_str})"
+                        transaction_conn.exec_driver_sql(sql)
+                    logging.info("🧹 Οι παλιές εγγραφές διαγράφηκαν.")
+            
+        # Εγγραφή των δεδομένων στον SQL Server
+        df_db.to_sql('WorkLogs', engine, if_exists='append', index=False)
+        logging.info(f"✅ Ο συγχρονισμός ολοκληρώθηκε! Αποθηκεύτηκαν {len(df_db)} εγγραφές στον SQL Server.\n")
     else:
         logging.warning("⚠️ Δεν βρέθηκαν δεδομένα (worklogs) στα tickets που κατέβηκαν.\n")
 except Exception as e:
-    logging.error(f"❌ Σφάλμα κατά την εγγραφή στην SQLite: {e}\n")
+    logging.error(f"❌ Σφάλμα κατά την εγγραφή στον SQL Server: {e}\n", exc_info=True)
     sys.exit(1)
