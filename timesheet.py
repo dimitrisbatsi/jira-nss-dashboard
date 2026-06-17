@@ -944,6 +944,15 @@ if sel_group_name != "Όλες οι Ομάδες":
 # 2. WIDGETS
 date_range = st.sidebar.date_input("📅 Ημερομηνίες", key="dates_key")
 sel_proj = st.sidebar.multiselect("📁 Project", options=sorted([str(x) for x in df["Project"].dropna().unique()]), key="proj_key")
+
+if st.session_state.logged_in:
+    user_name_to_select = st.session_state.display_name or st.session_state.username
+    if st.sidebar.button("👤 Επιλογή: Μόνο Εγώ", type="secondary", use_container_width=True):
+        all_auth = sorted([str(x) for x in df["Assignee"].dropna().unique()])
+        if user_name_to_select in all_auth:
+            st.session_state["auth_key"] = [user_name_to_select]
+            st.rerun()
+
 sel_auth = st.sidebar.multiselect("👤 Assignee", options=assignee_options, key="auth_key")
 sel_charge = st.sidebar.multiselect("💰 Charge Type", options=sorted([str(x) for x in df["Charge Type"].dropna().unique()]), key="charge_key")
 sel_time = st.sidebar.multiselect("⏱️ Time Type", options=sorted([str(x) for x in df["Time Type"].dropna().unique()]), key="time_key")
