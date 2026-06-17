@@ -1,4 +1,4 @@
-import streamlit as st
+﻿import streamlit as st
 import pandas as pd
 import requests
 import plotly.express as px
@@ -6,9 +6,10 @@ import io
 import os
 import re
 import hashlib
+import pyodbc
 from datetime import datetime
 
-APP_VERSION = "26.3.0 (2026-06-16)"
+APP_VERSION = "26.3.3 (2026-06-17)"
 
 # --- 1. Ρυθμίσεις Σελίδας ---
 st.set_page_config(layout="wide", page_title="NSS Timesheet Dashboard", page_icon="📊")
@@ -683,6 +684,89 @@ def delete_group(group_id):
     except Exception as e:
         st.error(f"Σφάλμα: {e}")
         return False
+
+# --- Response Times DB Configuration & Helpers ---
+RT_DB_SERVER = os.getenv("DB_SERVER", "dev-gemini")
+RT_DB_NAME = os.getenv("DB_NAME", "GeminiMetricsDemo")
+RT_DB_USER = os.getenv("DB_USER", "supportappl")
+RT_DB_PASSWORD = os.getenv("DB_PASSWORD", "Meq4HAR%")
+RT_DB_DRIVER = os.getenv("DB_DRIVER", "ODBC Driver 17 for SQL Server")
+
+def rt_get_connection():
+    conn_str = (
+        f"DRIVER={{{RT_DB_DRIVER}}};"
+        f"SERVER={RT_DB_SERVER};"
+        f"DATABASE={RT_DB_NAME};"
+        f"UID={RT_DB_USER};"
+        f"PWD={RT_DB_PASSWORD};"
+        "TrustServerCertificate=yes;"
+    )
+    return pyodbc.connect(conn_str)
+
+def rt_load_from_db():
+    conn = rt_get_connection()
+    query = """
+    SELECT 
+        i.ProjectId,
+        i.IssueId,
+        i.IssueKey,
+        i.CreationDate,
+        i.Status,
+        i.ClosedDate,
+        i.Type,
+        cf.FieldValue AS [SubCategory]
+    FROM dbo.GIssues i
+    LEFT JOIN dbo.GIssueCustomFields cf 
+        ON i.IssueID = cf.IssueID 
+        AND cf.CustomFieldName LIKE '%category%'
+        AND cf.SourceApp = i.SourceApp
+    WHERE i.Type = 'Epic' AND i.SourceApp = 'Jira'
+    """
+    try:
+        df_res = pd.read_sql(query, conn)
+        return df_res
+    finally:
+        conn.close()
+
+def rt_load_first_response():
+    conn = rt_get_connection()
+    query = """
+    SELECT 
+        IssueID,
+        MIN(Created) AS FirstResponseDate
+    FROM dbo.GComments
+    WHERE SourceApp = 'Jira'
+    GROUP BY IssueID
+    """
+    try:
+        df_res = pd.read_sql(query, conn)
+        return df_res
+    finally:
+        conn.close()
+
+def rt_load_first_assigned():
+    conn = rt_get_connection()
+    query = """
+    SELECT
+        IssueID,
+        MIN(Created) AS FirstAssignedDate
+    FROM dbo.GAudit
+    WHERE fieldname = 'Assignee'
+      AND newvalue IS NOT NULL
+      AND SourceApp = 'Jira'
+    GROUP BY IssueID
+    """
+    try:
+        df_res = pd.read_sql(query, conn)
+        return df_res
+    finally:
+        conn.close()
+
+def rt_convert_df_to_excel(df_res):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df_res.to_excel(writer, index=False, sheet_name="KPIs")
+    return output.getvalue()
 
 # --- 3. Φόρτωση από Βάση Δεδομένων ---
 
@@ -1634,6 +1718,217 @@ def render_management_content():
             else:
                 st.caption("🔒 Μόνο οι Administrators μπορούν να διαγράψουν ομάδες.")
 
+def render_response_times_content():
+    st.subheader("⏱️ Χρόνοι Απόκρισης & KPIs (Jira Epic Tickets)", divider="blue")
+
+    # Custom CSS for multiselect and metrics label spacing
+    st.markdown("""
+        <style>
+            div[data-testid="stMetricLabel"] > div {
+                white-space: normal !important;
+                word-break: break-word !important;
+                display: block !important;
+                text-overflow: unset !important;
+                overflow: visible !important;
+                min-height: 40px;
+            }
+            [data-testid="stMetricLabel"] {
+                white-space: normal !important;
+                min-height: 40px;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
+    if "rt_df" not in st.session_state:
+        st.session_state.rt_df = None
+
+    if st.button("🔄 Φόρτωση Δεδομένων & KPIs από τη Βάση", type="primary"):
+        with st.spinner("Φόρτωση δεδομένων από τη βάση..."):
+            try:
+                df_issues = rt_load_from_db().rename(columns={"IssueId": "IssueID"})
+                df_comments = rt_load_first_response()
+                df_assigned = rt_load_first_assigned()
+
+                # Convert Dates
+                df_issues["CreationDate"] = pd.to_datetime(df_issues["CreationDate"])
+                df_issues["ClosedDate"] = pd.to_datetime(df_issues["ClosedDate"])
+                df_comments["FirstResponseDate"] = pd.to_datetime(df_comments["FirstResponseDate"])
+                df_assigned["FirstAssignedDate"] = pd.to_datetime(df_assigned["FirstAssignedDate"])
+
+                # Merge All
+                rt_df = (
+                    df_issues
+                    .merge(df_assigned, on="IssueID", how="left")
+                    .merge(df_comments, on="IssueID", how="left")
+                )
+
+                rt_df["Project"] = rt_df["IssueKey"].astype(str).str.split("-").str[0]
+                BASE_URL = "https://epsilon-singularlogic.atlassian.net/browse/"
+                rt_df["JiraLink"] = BASE_URL + rt_df["IssueKey"].astype(str)
+
+                # KPI Calculation
+                rt_df["Creation->Assigned"] = (
+                    rt_df["FirstAssignedDate"] - rt_df["CreationDate"]
+                ).dt.total_seconds() / 86400
+
+                rt_df["Creation->FirstResponse"] = (
+                    rt_df["FirstResponseDate"] - rt_df["CreationDate"]
+                ).dt.total_seconds() / 86400
+
+                rt_df["Assigned->FirstResponse"] = (
+                    rt_df["FirstResponseDate"] - rt_df["FirstAssignedDate"]
+                ).dt.total_seconds() / 86400
+
+                rt_df["Assigned->Closed"] = (
+                    rt_df["ClosedDate"] - rt_df["FirstAssignedDate"]
+                ).dt.total_seconds() / 86400
+
+                rt_df["Creation->Closed"] = (
+                    rt_df["ClosedDate"] - rt_df["CreationDate"]
+                ).dt.total_seconds() / 86400
+
+                st.session_state.rt_df = rt_df
+                st.toast("✅ Επιτυχής φόρτωση δεδομένων KPIs!")
+            except Exception as e:
+                st.error(f"❌ Σφάλμα κατά τη σύνδεση ή τη φόρτωση από τη βάση: {e}")
+
+    if st.session_state.rt_df is not None:
+        rt_df = st.session_state.rt_df.copy()
+
+        # 1. Errors Detection
+        errors_df = rt_df[
+            (rt_df["Creation->Assigned"] < 0) |
+            (rt_df["Creation->FirstResponse"] < 0) |
+            (rt_df["Assigned->FirstResponse"] < 0) |
+            (rt_df["Assigned->Closed"] < 0) |
+            (rt_df["Creation->Closed"] < 0)
+        ][["IssueKey", "JiraLink", "Status", "CreationDate", "FirstAssignedDate", "FirstResponseDate", "ClosedDate"]].copy()
+
+        # 2. KPI Summary
+        st.write("<br>", unsafe_allow_html=True)
+        st.subheader("📊 KPI Summary")
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
+
+        col1.metric("Total Tickets", len(rt_df))
+        col2.metric("Creation → Assigned (days)", round(rt_df["Creation->Assigned"].mean(), 2))
+        col3.metric("Creation → First Response (days)", round(rt_df["Creation->FirstResponse"].mean(), 2))
+        col4.metric("Assigned → First Response (days)", round(rt_df["Assigned->FirstResponse"].mean(), 2))
+        col5.metric("Assigned → Closed (days)", round(rt_df["Assigned->Closed"].mean(), 2))
+        col6.metric("Creation → Closed (days)", round(rt_df["Creation->Closed"].mean(), 2))
+
+        st.markdown("---")
+
+        # 3. KPIs by Project Table
+        st.subheader("📊 KPIs by Project")
+        project_kpis = rt_df.groupby("Project").agg(
+            TotalTickets=("IssueID", "count"),
+            Avg_Creation_Assigned=("Creation->Assigned", "mean"),
+            Avg_Creation_FirstResponse=("Creation->FirstResponse", "mean"),
+            Avg_Assigned_FirstResponse=("Assigned->FirstResponse", "mean"),
+            Avg_Assigned_Closed=("Assigned->Closed", "mean"),
+            Avg_Creation_Closed=("Creation->Closed", "mean")
+        ).reset_index()
+        st.dataframe(project_kpis, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+
+        # 4. Filters & Full KPI Table
+        st.subheader("📊 Full KPI Table")
+
+        # Local Filters inside an expander
+        with st.expander("🔍 Φίλτρα Αναζήτησης KPIs", expanded=True):
+            fcol1, fcol2, fcol3, fcol4 = st.columns(4)
+
+            with fcol1:
+                all_statuses = sorted(rt_df["Status"].dropna().unique().tolist())
+                selected_statuses = st.multiselect("Ανά Status:", options=all_statuses, default=all_statuses, key="rt_filter_status")
+            with fcol2:
+                all_projects = sorted(rt_df["Project"].dropna().unique().tolist())
+                selected_projects = st.multiselect("Ανά Project:", options=all_projects, default=all_projects, key="rt_filter_project")
+            with fcol3:
+                all_subcategories = sorted(rt_df["SubCategory"].dropna().unique().tolist())
+                selected_subcategories = st.multiselect("Ανά Sub Category:", options=all_subcategories, default=all_subcategories, key="rt_filter_subcategory")
+            with fcol4:
+                min_date = rt_df["CreationDate"].min().date() if not rt_df.empty else datetime.now().date()
+                max_date = rt_df["CreationDate"].max().date() if not rt_df.empty else datetime.now().date()
+                date_range = st.date_input(
+                    "Εύρος Ημερολογίου (Creation):",
+                    value=(min_date, max_date),
+                    min_value=min_date,
+                    max_value=max_date,
+                    key="rt_filter_date"
+                )
+
+        # Apply local filters
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            start_date, end_date = date_range
+        else:
+            start_date = date_range[0] if isinstance(date_range, list) or isinstance(date_range, tuple) else date_range
+            end_date = max_date
+
+        filtered_rt_df = rt_df[
+            (rt_df["Status"].isin(selected_statuses)) &
+            (rt_df["Project"].isin(selected_projects)) &
+            (rt_df["SubCategory"].isin(selected_subcategories)) &
+            (rt_df["CreationDate"].dt.date >= start_date) &
+            (rt_df["CreationDate"].dt.date <= end_date)
+        ].copy()
+
+        # Render Table
+        st.dataframe(
+            filtered_rt_df,
+            use_container_width=True,
+            height=500,
+            column_config={
+                "IssueID": st.column_config.NumberColumn("ID", width=70, format="%d"),
+                "IssueKey": st.column_config.TextColumn("Ticket Key", width=110),
+                "JiraLink": st.column_config.LinkColumn("Jira", width=90, display_text="Open"),
+                "SubCategory": st.column_config.TextColumn("Sub Category", width=180),
+                "Status": st.column_config.TextColumn("Status", width=110),
+                "CreationDate": st.column_config.DatetimeColumn("Creation Date", width=160, format="DD/MM/YYYY HH:mm"),
+                "FirstAssignedDate": st.column_config.DatetimeColumn("First Assigned Date", width=160, format="DD/MM/YYYY HH:mm"),
+                "FirstResponseDate": st.column_config.DatetimeColumn("First Response Date", width=160, format="DD/MM/YYYY HH:mm"),
+                "ClosedDate": st.column_config.DatetimeColumn("Closed Date", width=160, format="DD/MM/YYYY HH:mm"),
+                "Creation->Assigned": st.column_config.NumberColumn("Creation → Assigned (Days)", width=240, format="%.2f"),
+                "Creation->FirstResponse": st.column_config.NumberColumn("Creation → First Response (Days)", width=240, format="%.2f"),
+                "Assigned->FirstResponse": st.column_config.NumberColumn("Assigned → First Response (Days)", width=240, format="%.2f"),
+                "Assigned->Closed": st.column_config.NumberColumn("Assigned → Closed (Days)", width=240, format="%.2f"),
+                "Creation->Closed": st.column_config.NumberColumn("Creation → Closed (Days)", width=220, format="%.2f"),
+            }
+        )
+
+        # Download Button
+        excel_data = rt_convert_df_to_excel(filtered_rt_df)
+        st.download_button(
+            label="📥 Λήψη σε Excel",
+            data=excel_data,
+            file_name="jira_kpi_filtered.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary"
+        )
+
+        st.markdown("---")
+
+        # 5. Data Errors Expander
+        with st.expander("⚠️ Πίνακας Ελέγχου Δεδομένων (Λάθη Χρηστών)", expanded=False):
+            st.warning(f"Βρέθηκαν {len(errors_df)} tickets με αρνητικούς χρόνους λόγω λάθος καταχώρησης ημερομηνιών στο Jira.")
+            if not errors_df.empty:
+                st.dataframe(
+                    errors_df,
+                    use_container_width=True,
+                    column_config={
+                        "IssueKey": st.column_config.TextColumn("Ticket Key", width=110),
+                        "JiraLink": st.column_config.LinkColumn("Jira", width=110, display_text="Open Ticket"),
+                        "Status": st.column_config.TextColumn("Status", width=110),
+                        "CreationDate": st.column_config.DatetimeColumn("Creation Date", width=160, format="DD/MM/YYYY HH:mm"),
+                        "FirstAssignedDate": st.column_config.DatetimeColumn("First Assigned Date", width=160, format="DD/MM/YYYY HH:mm"),
+                        "FirstResponseDate": st.column_config.DatetimeColumn("First Response Date", width=160, format="DD/MM/YYYY HH:mm"),
+                        "ClosedDate": st.column_config.DatetimeColumn("Closed Date", width=160, format="DD/MM/YYYY HH:mm")
+                    }
+                )
+            else:
+                st.success("Όλα καθαρά! Δεν βρέθηκαν λάθη στις ημερομηνίες.")
+
 def render_manual_content():
     st.subheader("📖 Οδηγίες Χρήσης NSS Timesheet Dashboard", divider="blue")
     
@@ -1715,11 +2010,33 @@ def render_manual_content():
            - Ορίστε Username, Password και Ρόλο (Administrator, Team Leader, Consultant) για να ολοκληρώσετε την εγγραφή.
         """)
 
+    # expander 6: Response Times & KPIs (Admins / Team Leaders)
+    with st.expander("⏱️ 6. Χρόνοι Απόκρισης & KPIs (Admins / Team Leaders)"):
+        st.markdown("""
+        Η καρτέλα **`⏱️ Χρόνοι Απόκρισης`** (ορατή μόνο σε Administrators και Team Leaders) παρέχει εργαλεία ανάλυσης των χρόνων απόκρισης των Epic tickets:
+        1. **Φόρτωση Δεδομένων**:
+           - Πατήστε το κουμπί **`🔄 Φόρτωση Δεδομένων & KPIs από τη Βάση`** για να αντληθούν οι πληροφορίες από τη βάση μετρήσεων.
+        2. **KPI Metrics & Summary**:
+           - Εμφανίζονται οι μέσοι χρόνοι (σε ημέρες) για τις εξής μεταβάσεις:
+             - **Creation → Assigned**: Χρόνος ανάθεσης.
+             - **Creation → First Response**: Χρόνος πρώτης απάντησης (comment) από τη δημιουργία.
+             - **Assigned → First Response**: Χρόνος πρώτης απάντησης μετά την ανάθεση.
+             - **Assigned → Closed**: Χρόνος ολοκλήρωσης από την ανάθεση.
+             - **Creation → Closed**: Συνολικός χρόνος ζωής του ticket.
+        3. **Φίλτρα Αναζήτησης KPIs**:
+           - Μπορείτε να φιλτράρετε τον πίνακα με βάση το Status, το Project, το Sub Category (Υποκατηγορία) και το εύρος ημερομηνιών δημιουργίας.
+        4. **Λήψη σε Excel**:
+           - Πατώντας **`📥 Λήψη σε Excel`** μπορείτε να κάνετε λήψη των φιλτραρισμένων KPIs σε μορφή Excel.
+        5. **Πίνακας Ελέγχου Λαθών**:
+           - Στο κάτω μέρος υπάρχει πίνακας που εντοπίζει τυχόν σφάλματα καταχωρήσεων στο Jira (π.χ. αρνητικούς χρόνους λόγω λανθασμένων ημερομηνιών).
+        """)
+
 # --- Render Tab Layout ---
 if st.session_state.logged_in:
     tab_list = ["📊 Timesheet", "👤 Το Προφίλ μου"]
     if st.session_state.user_role in ["Administrator", "Team Leader"]:
         tab_list.append("👥 Διαχείριση Ομάδων")
+        tab_list.append("⏱️ Χρόνοι Απόκρισης")
     tab_list.append("📖 Οδηγίες Χρήσης")
         
     main_tabs = st.tabs(tab_list)
@@ -1734,6 +2051,9 @@ if st.session_state.logged_in:
     if st.session_state.user_role in ["Administrator", "Team Leader"]:
         with main_tabs[idx]:
             render_management_content()
+        idx += 1
+        with main_tabs[idx]:
+            render_response_times_content()
         idx += 1
         
     with main_tabs[idx]:
