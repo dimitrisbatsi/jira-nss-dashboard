@@ -350,6 +350,20 @@ try:
         # Εγγραφή των δεδομένων στον SQL Server
         df_db.to_sql('WorkLogs', engine, if_exists='append', index=False)
         logging.info(f"✅ Ο συγχρονισμός ολοκληρώθηκε! Αποθηκεύτηκαν {len(df_db)} εγγραφές στον SQL Server.\n")
+        
+        # Ενημέρωση της τελευταίας ημερομηνίας συγχρονισμού
+        try:
+            with engine.begin() as metadata_conn:
+                metadata_conn.exec_driver_sql(
+                    "IF OBJECT_ID('Sync_Metadata', 'U') IS NULL "
+                    "CREATE TABLE Sync_Metadata (LastSyncDateTime DATETIME)"
+                )
+                metadata_conn.exec_driver_sql("DELETE FROM Sync_Metadata")
+                metadata_conn.exec_driver_sql("INSERT INTO Sync_Metadata (LastSyncDateTime) VALUES (GETDATE())")
+            logging.info("📝 Η ημερομηνία τελευταίου συγχρονισμού ενημερώθηκε στη βάση.")
+        except Exception as meta_ex:
+            logging.warning(f"⚠️ Αποτυχία ενημέρωσης Sync_Metadata: {meta_ex}")
+            
     else:
         logging.warning("⚠️ Δεν βρέθηκαν δεδομένα (worklogs) στα tickets που κατέβηκαν.\n")
 except Exception as e:

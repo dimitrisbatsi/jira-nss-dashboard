@@ -114,6 +114,17 @@ def get_db_engine():
             engine = create_engine(f"mssql+pyodbc:///?odbc_connect={params}")
             with engine.connect() as conn:
                 pass
+                
+            # Ensure IsDefault column exists in User_Presets table
+            try:
+                with engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        "IF COL_LENGTH('User_Presets', 'IsDefault') IS NULL "
+                        "ALTER TABLE User_Presets ADD IsDefault BIT NOT NULL DEFAULT 0;"
+                    )
+            except Exception:
+                pass
+                
             return engine
         except Exception:
             pass
@@ -221,9 +232,9 @@ def load_user_presets(user_id):
     from sqlalchemy import text
     try:
         with engine.connect() as conn:
-            query = text("SELECT PresetID, PresetName, FiltersJSON FROM User_Presets WHERE UserID = :user_id ORDER BY CreatedAt DESC")
+            query = text("SELECT PresetID, PresetName, FiltersJSON, IsDefault FROM User_Presets WHERE UserID = :user_id ORDER BY CreatedAt DESC")
             res = conn.execute(query, {"user_id": user_id}).fetchall()
-            return [{"PresetID": r[0], "PresetName": r[1], "FiltersJSON": r[2]} for r in res]
+            return [{"PresetID": r[0], "PresetName": r[1], "FiltersJSON": r[2], "IsDefault": r[3]} for r in res]
     except Exception:
         return []
 
@@ -259,6 +270,43 @@ def update_user_preset(user_id, preset_name, filters_json):
         st.error(f"Σφάλμα ενημέρωσης preview: {e}")
         return False
 
+def get_user_default_preset(user_id):
+    engine = get_db_engine()
+    if not engine:
+        return None
+    from sqlalchemy import text
+    try:
+        with engine.connect() as conn:
+            query = text("SELECT PresetName, FiltersJSON FROM User_Presets WHERE UserID = :user_id AND IsDefault = 1")
+            res = conn.execute(query, {"user_id": user_id}).fetchone()
+            if res:
+                return {"PresetName": res[0], "FiltersJSON": res[1]}
+    except Exception:
+        pass
+    return None
+
+def set_preset_as_default(user_id, preset_name):
+    engine = get_db_engine()
+    if not engine:
+        return False
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            # 1. Clear IsDefault for all presets of this user
+            conn.execute(
+                text("UPDATE User_Presets SET IsDefault = 0 WHERE UserID = :user_id"),
+                {"user_id": user_id}
+            )
+            # 2. Set IsDefault = 1 for the selected preset
+            conn.execute(
+                text("UPDATE User_Presets SET IsDefault = 1 WHERE UserID = :user_id AND PresetName = :name"),
+                {"user_id": user_id, "name": preset_name}
+            )
+        return True
+    except Exception as e:
+        st.error(f"Σφάλμα ορισμού προεπιλογής: {e}")
+        return False
+
 def load_all_active_users():
     engine = get_db_engine()
     if not engine:
@@ -292,6 +340,8 @@ def apply_preset_filters(filters_json):
             st.session_state["comp_key"] = filters["comp_key"]
         if "dates_key" in filters:
             st.session_state["dates_key"] = [pd.to_datetime(d).date() for d in filters["dates_key"]]
+        if "group_key" in filters:
+            st.session_state["group_key"] = filters["group_key"]
         st.session_state["filters_init"] = True
     except Exception as e:
         st.error(f"Σφάλμα εφαρμογής preview: {e}")
@@ -301,8 +351,9 @@ def get_cookie_signature(session_token: str) -> str:
     secret_key = hashlib.sha256(st.secrets.get("CONNECTION_STRING", "fallback-secret").encode("utf-8")).hexdigest()
     return hmac.new(secret_key.encode("utf-8"), session_token.encode("utf-8"), hashlib.sha256).hexdigest()
 
-def set_cookie(name: str, value: str, ttl_days: int = 30):
+def set_cookie(name: str, value: str, ttl_days: int = 30, trigger_reload: bool = False):
     import streamlit.components.v1 as components
+    reload_js = "window.parent.location.reload();" if trigger_reload else ""
     components.html(
         f"""
         <script>
@@ -310,21 +361,25 @@ def set_cookie(name: str, value: str, ttl_days: int = 30):
             date.setTime(date.getTime() + ({ttl_days}*24*60*60*1000));
             var expires = "; expires=" + date.toUTCString();
             document.cookie = "{name}=" + encodeURIComponent("{value}") + expires + "; path=/; SameSite=Lax";
+            {reload_js}
         </script>
         """,
         height=0,
     )
 
-def erase_cookie(name: str):
+def erase_cookie(name: str, trigger_reload: bool = False):
     import streamlit.components.v1 as components
+    reload_js = "window.parent.location.reload();" if trigger_reload else ""
     components.html(
         f"""
         <script>
             document.cookie = "{name}=; Max-Age=0; path=/; SameSite=Lax";
+            {reload_js}
         </script>
         """,
         height=0,
     )
+
 
 def load_groups_from_db():
     engine = get_db_engine()
@@ -435,6 +490,80 @@ def register_new_user(username, password_plain, email, role_id, display_name=Non
         st.error(f"Σφάλμα: {e}")
         return False
 
+def load_all_users_admin():
+    engine = get_db_engine()
+    if not engine:
+        return []
+    from sqlalchemy import text
+    try:
+        with engine.connect() as conn:
+            query = text(
+                "SELECT u.UserID, u.Username, u.Email, u.RoleID, u.DisplayName, u.IsActive, u.CreatedAt, r.RoleName "
+                "FROM Users u "
+                "JOIN User_Roles r ON u.RoleID = r.RoleID "
+                "ORDER BY u.Username"
+            )
+            res = conn.execute(query).fetchall()
+            return [{
+                "UserID": r[0],
+                "Username": r[1],
+                "Email": r[2],
+                "RoleID": r[3],
+                "DisplayName": r[4],
+                "IsActive": bool(r[5]),
+                "CreatedAt": r[6],
+                "RoleName": r[7]
+            } for r in res]
+    except Exception:
+        return []
+
+def admin_update_user_status(user_id, is_active):
+    engine = get_db_engine()
+    if not engine:
+        return False
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE Users SET IsActive = :active WHERE UserID = :user_id"),
+                {"active": 1 if is_active else 0, "user_id": user_id}
+            )
+        return True
+    except Exception as e:
+        st.error(f"Σφάλμα κατά την ενημέρωση κατάστασης χρήστη: {e}")
+        return False
+
+def admin_reset_user_password(user_id, default_password_plain):
+    engine = get_db_engine()
+    if not engine:
+        return False
+    from sqlalchemy import text
+    try:
+        pwd_hash = hash_password(default_password_plain)
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE Users SET PasswordHash = :hash WHERE UserID = :user_id"),
+                {"hash": pwd_hash, "user_id": user_id}
+            )
+        return True
+    except Exception as e:
+        st.error(f"Σφάλμα κατά την επαναφορά κωδικού: {e}")
+        return False
+
+def delete_all_user_sessions(user_id):
+    engine = get_db_engine()
+    if not engine:
+        return
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM User_Sessions WHERE UserID = :user_id"),
+                {"user_id": user_id}
+            )
+    except Exception:
+        pass
+
 def create_new_group_with_members(group_name, member_ids):
     engine = get_db_engine()
     if not engine:
@@ -539,7 +668,19 @@ def load_data_from_db():
         if "Date" in df.columns:
             df["Date"] = pd.to_datetime(df["Date"]).dt.strftime('%Y-%m-%d')
             
-        last_updated = datetime.now().strftime("%d/%m/%Y %H:%M")
+        # Λήψη τελευταίας ημερομηνίας συγχρονισμού από Sync_Metadata
+        last_updated = "Άγνωστο"
+        try:
+            with engine.connect() as conn:
+                from sqlalchemy import text
+                res = conn.execute(text("SELECT TOP 1 LastSyncDateTime FROM Sync_Metadata")).fetchone()
+                if res and res[0]:
+                    last_updated = res[0].strftime("%d/%m/%Y %H:%M")
+                else:
+                    last_updated = datetime.now().strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            last_updated = datetime.now().strftime("%d/%m/%Y %H:%M")
+            
         return df, last_updated
         
     except Exception as e:
@@ -560,6 +701,8 @@ if df.empty:
 if not st.session_state.logged_in:
     cookie_val = st.context.cookies.get("nss_session")
     if cookie_val:
+        import urllib.parse
+        cookie_val = urllib.parse.unquote(cookie_val)
         try:
             if ":" in cookie_val:
                 cookie_token, cookie_sig = cookie_val.split(":", 1)
@@ -577,9 +720,9 @@ if not st.session_state.logged_in:
                         if "filters_init" in st.session_state:
                             del st.session_state["filters_init"]
                     else:
-                        erase_cookie("nss_session")
+                        erase_cookie("nss_session", trigger_reload=False)
                 else:
-                    erase_cookie("nss_session")
+                    erase_cookie("nss_session", trigger_reload=False)
         except Exception:
             pass
 
@@ -606,10 +749,10 @@ if not st.session_state.logged_in:
                     session_token = create_user_session(user["UserID"])
                     if session_token:
                         sig = get_cookie_signature(session_token)
-                        set_cookie("nss_session", f"{session_token}:{sig}")
-                
-                st.toast(f"✅ Καλώς ήρθες, {user['Username']}!")
-                st.rerun()
+                        set_cookie("nss_session", f"{session_token}:{sig}", trigger_reload=True)
+                else:
+                    st.toast(f"✅ Καλώς ήρθες, {user['Username']}!")
+                    st.rerun()
             else:
                 st.error("❌ Λάθος στοιχεία σύνδεσης")
 else:
@@ -618,10 +761,13 @@ else:
     
     if st.sidebar.button("Αποσύνδεση", type="secondary", use_container_width=True):
         cookie_val = st.context.cookies.get("nss_session")
-        if cookie_val and ":" in cookie_val:
-            cookie_token, _ = cookie_val.split(":", 1)
-            delete_user_session(cookie_token)
-        erase_cookie("nss_session")
+        if cookie_val:
+            import urllib.parse
+            cookie_val = urllib.parse.unquote(cookie_val)
+            if ":" in cookie_val:
+                cookie_token, _ = cookie_val.split(":", 1)
+                delete_user_session(cookie_token)
+        erase_cookie("nss_session", trigger_reload=True)
         
         st.session_state.logged_in = False
         st.session_state.username = None
@@ -632,7 +778,6 @@ else:
         if "filters_init" in st.session_state:
             del st.session_state["filters_init"]
         st.toast("👋 Αποσυνδεθήκατε με επιτυχία.")
-        st.rerun()
 
 st.sidebar.write("---")
 st.sidebar.markdown('<h1 class="stHeadingSidebar">🎛️ Φίλτρα Αναζήτησης</h1>', unsafe_allow_html=True)
@@ -672,22 +817,64 @@ if "filters_init" not in st.session_state:
     else:
         all_comp = []
 
-    # Default project preselection from Profile
-    default_proj_preselect = all_proj
-    if st.session_state.logged_in and st.session_state.default_project:
-        dp = st.session_state.default_project
-        if dp in all_proj:
-            default_proj_preselect = [dp]
-    
-    st.session_state['proj_key'] = default_proj_preselect
-    st.session_state['auth_key'] = all_auth
-    st.session_state['charge_key'] = all_charge
-    st.session_state['time_key'] = all_time
-    st.session_state['partner_key'] = all_partner
-    st.session_state['lsp_key'] = all_lsp
-    st.session_state['comp_key'] = all_comp
-    st.session_state['dates_key'] = [pd.to_datetime(df['Date']).min(), pd.to_datetime(df['Date']).max()]
-    st.session_state['group_key'] = ["Assignee"]
+    # Check for default preset first if user is logged in
+    has_loaded_default_preset = False
+    if st.session_state.logged_in:
+        default_preset = get_user_default_preset(st.session_state.user_id)
+        if default_preset:
+            import json
+            try:
+                filters = json.loads(default_preset["FiltersJSON"])
+                if "proj_key" in filters:
+                    st.session_state["proj_key"] = filters["proj_key"]
+                if "auth_key" in filters:
+                    st.session_state["auth_key"] = filters["auth_key"]
+                if "charge_key" in filters:
+                    st.session_state["charge_key"] = filters["charge_key"]
+                if "time_key" in filters:
+                    st.session_state["time_key"] = filters["time_key"]
+                if "partner_key" in filters:
+                    st.session_state["partner_key"] = filters["partner_key"]
+                if "lsp_key" in filters:
+                    st.session_state["lsp_key"] = filters["lsp_key"]
+                if "comp_key" in filters:
+                    st.session_state["comp_key"] = filters["comp_key"]
+                if "dates_key" in filters:
+                    st.session_state["dates_key"] = [pd.to_datetime(d).date() for d in filters["dates_key"]]
+                if "group_key" in filters:
+                    st.session_state["group_key"] = filters["group_key"]
+                
+                st.session_state.active_preset_name = default_preset["PresetName"]
+                st.session_state.active_preset_json = default_preset["FiltersJSON"]
+                has_loaded_default_preset = True
+            except Exception:
+                pass
+
+    if not has_loaded_default_preset:
+        # Default project preselection from Profile
+        default_proj_preselect = all_proj
+        if st.session_state.logged_in and st.session_state.default_project:
+            dp = st.session_state.default_project
+            if dp in all_proj:
+                default_proj_preselect = [dp]
+        
+        # Default assignee preselection:
+        # If logged in, pre-select ONLY the logged-in user if their name matches any assignee
+        default_auth_preselect = all_auth
+        if st.session_state.logged_in:
+            user_name_to_select = st.session_state.display_name or st.session_state.username
+            if user_name_to_select in all_auth:
+                default_auth_preselect = [user_name_to_select]
+
+        st.session_state['proj_key'] = default_proj_preselect
+        st.session_state['auth_key'] = default_auth_preselect
+        st.session_state['charge_key'] = all_charge
+        st.session_state['time_key'] = all_time
+        st.session_state['partner_key'] = all_partner
+        st.session_state['lsp_key'] = all_lsp
+        st.session_state['comp_key'] = all_comp
+        st.session_state['dates_key'] = [pd.to_datetime(df['Date']).min(), pd.to_datetime(df['Date']).max()]
+        st.session_state['group_key'] = ["Assignee"]
     
     st.session_state["filters_init"] = True
 
@@ -735,7 +922,10 @@ if st.session_state.logged_in:
         def on_preset_change():
             val = st.session_state.selected_preset_name_widget
             if val and val != "-- Επιλέξτε Preview --":
-                selected_preset = next((p for p in presets if p["PresetName"] == val), None)
+                clean_val = val
+                if " (⭐ Προεπιλογή)" in clean_val:
+                    clean_val = clean_val.replace(" (⭐ Προεπιλογή)", "")
+                selected_preset = next((p for p in presets if p["PresetName"] == clean_val), None)
                 if selected_preset:
                     import json
                     try:
@@ -757,6 +947,8 @@ if st.session_state.logged_in:
                             st.session_state["comp_key"] = filters["comp_key"]
                         if "dates_key" in filters:
                             st.session_state["dates_key"] = [pd.to_datetime(d).date() for d in filters["dates_key"]]
+                        if "group_key" in filters:
+                            st.session_state["group_key"] = filters["group_key"]
                             
                         # Store active preset information in session state
                         st.session_state.active_preset_name = selected_preset["PresetName"]
@@ -768,7 +960,10 @@ if st.session_state.logged_in:
             # Reset selectbox state so it doesn't loop
             st.session_state.selected_preset_name_widget = "-- Επιλέξτε Preview --"
 
-        preset_names = ["-- Επιλέξτε Preview --"] + [p["PresetName"] for p in presets]
+        preset_names = ["-- Επιλέξτε Preview --"] + [
+            f"{p['PresetName']} (⭐ Προεπιλογή)" if p.get("IsDefault") else p["PresetName"]
+            for p in presets
+        ]
         selected_preset_name = st.selectbox(
             "Φόρτωση Preview", 
             options=preset_names, 
@@ -788,7 +983,8 @@ if st.session_state.logged_in:
                     "partner_key": st.session_state.get("partner_key", []),
                     "lsp_key": st.session_state.get("lsp_key", []),
                     "comp_key": st.session_state.get("comp_key", []),
-                    "dates_key": [str(d) for d in st.session_state.get("dates_key", [])]
+                    "dates_key": [str(d) for d in st.session_state.get("dates_key", [])],
+                    "group_key": st.session_state.get("group_key", ["Assignee"])
                 }
                 import json
                 if save_user_preset(st.session_state.user_id, new_preset_name.strip(), json.dumps(filters_dict)):
@@ -802,6 +998,19 @@ if st.session_state.logged_in:
         if active_preset_name:
             st.markdown("---")
             st.markdown(f"📂 **Ενεργό Preview:** `{active_preset_name}`")
+            
+            # Check if it is the default one
+            active_preset = next((p for p in presets if p["PresetName"] == active_preset_name), None)
+            is_default_active = active_preset.get("IsDefault", False) if active_preset else False
+            
+            if is_default_active:
+                st.markdown("⭐ **Προεπιλεγμένο Preview (αυτόματο)**")
+            else:
+                if st.button("⭐ Ορισμός ως Προεπιλογή", type="secondary", use_container_width=True):
+                    if set_preset_as_default(st.session_state.user_id, active_preset_name):
+                        st.toast("✅ Ορίστηκε ως προεπιλεγμένο preview!")
+                        st.rerun()
+            
             col_update, col_close = st.columns(2)
             with col_update:
                 if st.button("💾 Ενημέρωση", type="primary", use_container_width=True):
@@ -814,7 +1023,8 @@ if st.session_state.logged_in:
                         "partner_key": st.session_state.get("partner_key", []),
                         "lsp_key": st.session_state.get("lsp_key", []),
                         "comp_key": st.session_state.get("comp_key", []),
-                        "dates_key": [str(d) for d in st.session_state.get("dates_key", [])]
+                        "dates_key": [str(d) for d in st.session_state.get("dates_key", [])],
+                        "group_key": st.session_state.get("group_key", ["Assignee"])
                     }
                     import json
                     new_json = json.dumps(filters_dict)
@@ -878,7 +1088,7 @@ def render_dashboard_content(df, last_updated, start, end, sel_proj, sel_auth, s
     with col_time:
         st.write("") 
         st.write("")
-        st.caption(f"🔄 **Τελευταία Ενημέρωση:** {last_updated}")
+        st.caption(f"🔄 **Τελευταία Ενημέρωση Δεδομένων:** {last_updated}")
     
     st.subheader("📌 Σύνοψη", divider="blue")
     m1, m2, m3, m4 = st.columns(4)
@@ -1125,6 +1335,63 @@ def render_profile_content():
 def render_management_content():
     st.subheader("👥 Διαχείριση Ομάδων & Χρηστών", divider="blue")
     
+    # User List and Administration (Visible to Admins & Team Leaders, editing ONLY for Admins)
+    with st.expander("📋 Λίστα & Διαχείριση Χρηστών"):
+        users_list = load_all_users_admin()
+        if users_list:
+            df_users = pd.DataFrame([{
+                "Username": u["Username"],
+                "Όνομα (Jira)": u["DisplayName"] or "N/A",
+                "Email": u["Email"],
+                "Ρόλος": u["RoleName"],
+                "Ενεργός": "✅ Ναι" if u["IsActive"] else "❌ Όχι",
+                "Ημ. Δημιουργίας": u["CreatedAt"].strftime("%d/%m/%Y %H:%M") if u["CreatedAt"] else "N/A"
+            } for u in users_list])
+            
+            st.dataframe(df_users, use_container_width=True, hide_index=True)
+            
+            # Editing functions for Admins only
+            if st.session_state.user_role == "Administrator":
+                st.markdown("---")
+                st.markdown("#### ⚙️ Επεξεργασία & Επαναφορά Χρήστη")
+                
+                user_options_edit = {u["Username"]: u for u in users_list}
+                sel_edit_username = st.selectbox(
+                    "Επιλέξτε χρήστη για επεξεργασία", 
+                    options=["-- Επιλέξτε Χρήστη --"] + list(user_options_edit.keys()),
+                    key="admin_user_edit_selectbox"
+                )
+                
+                if sel_edit_username != "-- Επιλέξτε Χρήστη --":
+                    selected_user = user_options_edit[sel_edit_username]
+                    is_admin_user = selected_user["RoleName"] == "Administrator"
+                    
+                    st.write(f"Επεξεργασία χρήστη: **{selected_user['Username']}** (Ρόλος: `{selected_user['RoleName']}`)")
+                    
+                    if is_admin_user:
+                        st.warning("🔒 Δεν επιτρέπεται η ενεργοποίηση/απενεργοποίηση χρηστών με ρόλο Administrator.")
+                        new_active = st.checkbox("Ενεργός Λογαριασμός", value=selected_user["IsActive"], disabled=True, key="admin_user_active_checkbox_disabled")
+                    else:
+                        new_active = st.checkbox("Ενεργός Λογαριασμός", value=selected_user["IsActive"], key="admin_user_active_checkbox")
+                        if new_active != selected_user["IsActive"]:
+                            if st.button("Αποθήκευση Κατάστασης", type="primary", key="admin_save_user_active_btn"):
+                                if admin_update_user_status(selected_user["UserID"], new_active):
+                                    if not new_active:
+                                        delete_all_user_sessions(selected_user["UserID"])
+                                    st.success("✅ Η κατάσταση του χρήστη ενημερώθηκε!")
+                                    st.rerun()
+                                    
+                    st.markdown("**Επαναφορά Κωδικού σε Default**")
+                    st.write("Ο προεπιλεγμένος κωδικός επαναφοράς είναι: `nss12345`")
+                    if st.button("🔄 Επαναφορά Κωδικού", type="secondary", key="admin_reset_pwd_btn"):
+                        if admin_reset_user_password(selected_user["UserID"], "nss12345"):
+                            delete_all_user_sessions(selected_user["UserID"])
+                            st.success(f"✅ Ο κωδικός για τον χρήστη '{selected_user['Username']}' επαναφέρθηκε σε `nss12345`!")
+        else:
+            st.info("Δεν βρέθηκαν χρήστες στη βάση δεδομένων.")
+            
+    st.markdown("---")
+    
     # 1. User Registration Form (ONLY for Administrator role)
     if st.session_state.user_role == "Administrator":
         with st.expander("➕ Εγγραφή Νέου Χρήστη (Μόνο Διαχειριστές)"):
@@ -1287,6 +1554,10 @@ def render_manual_content():
            - Όταν ένα Preview είναι ενεργό, μπορείτε να αλλάξετε τα φίλτρα στο Sidebar και να πατήσετε **Ενημέρωση** για να αποθηκεύσετε τις νέες επιλογές στο ίδιο όνομα.
         4. **Κοινοποίηση (Share)**:
            - Μπορείτε να μοιραστείτε το ενεργό Preview σας με έναν άλλον ενεργό χρήστη, επιλέγοντας το όνομά του και πατώντας **Κοινοποίηση**. Το Preview θα εμφανιστεί αυτόματα στη δική του λίστα!
+        5. **🗂️ Ομαδοποίηση (Group By)**:
+           - Μαζί με τα φίλτρα αναζήτησης, το Preview αποθηκεύει και την τρέχουσα επιλογή ομαδοποίησης (Group By), ώστε ο πίνακας να εμφανίζεται ακριβώς όπως τον διαμορφώσατε.
+        6. **⭐ Ορισμός ως Προεπιλογή**:
+           - Μπορείτε να ορίσετε ένα Preview ως προεπιλεγμένο πατώντας **⭐ Ορισμός ως Προεπιλογή**. Το συγκεκριμένο Preview θα φορτώνει αυτόματα κάθε φορά που ανοίγετε την εφαρμογή.
         """)
         
     # expander 3: Authentication & Connection Persistence
@@ -1313,10 +1584,14 @@ def render_manual_content():
     with st.expander("👥 5. Διαχείριση Ομάδων & Χρηστών (Admins / Team Leaders)"):
         st.markdown("""
         Η καρτέλα **`👥 Διαχείριση Ομάδων`** (ορατή μόνο σε Administrators και Team Leaders) επιτρέπει:
-        1. **Διαχείριση Ομάδων**:
+        1. **📋 Λίστα & Διαχείριση Χρηστών**:
+           - **Προβολή Λίστας**: Εμφανίζεται αναλυτικός πίνακας με όλους τους εγγεγραμμένους χρήστες (ενεργούς και ανενεργούς), τον ρόλο τους, το email τους και την ημερομηνία δημιουργίας τους.
+           - **Ενεργοποίηση / Απενεργοποίηση** (Μόνο για Administrators): Οι διαχειριστές μπορούν να ενεργοποιούν ή να απενεργοποιούν λογαριασμούς (εξαιρούνται οι λογαριασμοί Administrators για λόγους ασφαλείας).
+           - **Επαναφορά Κωδικού (Reset Password)** (Μόνο για Administrators): Δυνατότητα άμεσης επαναφοράς του κωδικού ενός χρήστη στον προεπιλεγμένο κωδικό `nss12345`.
+        2. **Διαχείριση Ομάδων**:
            - **Δημιουργία Ομάδας**: Δώστε ένα όνομα και επιλέξτε ποιοι Σύμβουλοι (Assignees) ανήκουν σε αυτή.
            - **Επεξεργασία/Διαγραφή**: Αλλάξτε τα μέλη ή το όνομα μιας υπάρχουσας ομάδας ή διαγράψτε την (η διαγραφή ομάδων επιτρέπεται μόνο σε Administrators).
-        2. **Εγγραφή Νέου Χρήστη** (Μόνο για Administrators):
+        3. **Εγγραφή Νέου Χρήστη** (Μόνο για Administrators):
            - Εισάγετε το Email του νέου χρήστη.
            - Πατήστε **Αναζήτηση Display Name στο Jira API**. Η εφαρμογή θα τραβήξει αυτόματα το ονοματεπώνυμο του χρήστη από το Jira για να το συνδέσει άμεσα με τα worklogs του.
            - Ορίστε Username, Password και Ρόλο (Administrator, Team Leader, Consultant) για να ολοκληρώσετε την εγγραφή.

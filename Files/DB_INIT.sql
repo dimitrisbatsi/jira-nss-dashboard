@@ -73,3 +73,8 @@ CREATE TABLE WorkLogs (
     PartnerName NVARCHAR(255) NULL,
     LSPCustomerName NVARCHAR(255) NULL
 );
+
+-- 8. Μεταδεδομένα Συγχρονισμού (Sync Metadata)
+CREATE TABLE Sync_Metadata (
+    LastSyncDateTime DATETIME
+);
