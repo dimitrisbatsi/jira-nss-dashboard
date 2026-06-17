@@ -125,6 +125,23 @@ def get_db_engine():
             except Exception:
                 pass
                 
+            # Ensure System_Logs table exists
+            try:
+                with engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        "IF OBJECT_ID('System_Logs', 'U') IS NULL "
+                        "CREATE TABLE System_Logs ("
+                        "   LogID INT IDENTITY(1,1) PRIMARY KEY,"
+                        "   UserID INT NOT NULL,"
+                        "   Action NVARCHAR(100) NOT NULL,"
+                        "   Details NVARCHAR(MAX) NOT NULL,"
+                        "   CreatedAt DATETIME DEFAULT GETDATE(),"
+                        "   CONSTRAINT FK_SystemLogs_Users FOREIGN KEY (UserID) REFERENCES Users(UserID)"
+                        ");"
+                    )
+            except Exception:
+                pass
+                
             return engine
         except Exception:
             pass
@@ -564,6 +581,20 @@ def delete_all_user_sessions(user_id):
     except Exception:
         pass
 
+def write_system_log(user_id, action, details):
+    engine = get_db_engine()
+    if not engine:
+        return
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO System_Logs (UserID, Action, Details) VALUES (:user_id, :action, :details)"),
+                {"user_id": user_id, "action": action, "details": details}
+            )
+    except Exception:
+        pass
+
 def create_new_group_with_members(group_name, member_ids):
     engine = get_db_engine()
     if not engine:
@@ -881,7 +912,26 @@ if "filters_init" not in st.session_state:
 # --- 👥 Ομάδες Χρηστών Filter ---
 groups = load_groups_from_db()
 group_names = ["Όλες οι Ομάδες"] + [g["GroupName"] for g in groups]
-sel_group_name = st.sidebar.selectbox("👥 Ομάδα Χρηστών", options=group_names, index=0)
+
+def on_group_filter_change():
+    val = st.session_state.group_filter_selectbox_key
+    all_auth = sorted([str(x) for x in df["Assignee"].dropna().unique()])
+    if val and val != "Όλες οι Ομάδες":
+        selected_group = next((g for g in groups if g["GroupName"] == val), None)
+        if selected_group:
+            group_members = load_group_members(selected_group["GroupID"])
+            if group_members:
+                st.session_state["auth_key"] = sorted([m for m in group_members if m in all_auth])
+    else:
+        st.session_state["auth_key"] = all_auth
+
+sel_group_name = st.sidebar.selectbox(
+    "👥 Ομάδα Χρηστών", 
+    options=group_names, 
+    index=0, 
+    key="group_filter_selectbox_key",
+    on_change=on_group_filter_change
+)
 
 # Limit assignee options if a group is selected
 assignee_options = sorted([str(x) for x in df["Assignee"].dropna().unique()])
@@ -1011,7 +1061,7 @@ if st.session_state.logged_in:
                         st.toast("✅ Ορίστηκε ως προεπιλεγμένο preview!")
                         st.rerun()
             
-            col_update, col_close = st.columns(2)
+            col_update, col_reload, col_close = st.columns(3)
             with col_update:
                 if st.button("💾 Ενημέρωση", type="primary", use_container_width=True):
                     # Build current filters dictionary
@@ -1031,6 +1081,12 @@ if st.session_state.logged_in:
                     if update_user_preset(st.session_state.user_id, active_preset_name, new_json):
                         st.session_state.active_preset_json = new_json
                         st.toast("✅ Το Preview ενημερώθηκε επιτυχώς!")
+            with col_reload:
+                if st.button("🔄 Επαναφορά", type="secondary", use_container_width=True, help="Επαναφορά στα αρχικά αποθηκευμένα φίλτρα"):
+                    if "active_preset_json" in st.session_state:
+                        apply_preset_filters(st.session_state.active_preset_json)
+                        st.toast("🔄 Τα αρχικά φίλτρα του Preview επαναφέρθηκαν!")
+                        st.rerun()
             with col_close:
                 if st.button("❌ Κλείσιμο", type="secondary", use_container_width=True):
                     if "active_preset_name" in st.session_state:
@@ -1378,7 +1434,12 @@ def render_management_content():
                                 if admin_update_user_status(selected_user["UserID"], new_active):
                                     if not new_active:
                                         delete_all_user_sessions(selected_user["UserID"])
-                                    st.success("✅ Η κατάσταση του χρήστη ενημερώθηκε!")
+                                    write_system_log(
+                                        st.session_state.user_id,
+                                        "UPDATE_USER_STATUS",
+                                        f"Αλλαγή κατάστασης χρήστη {selected_user['Username']} σε: {'Ενεργός' if new_active else 'Ανενεργός'}"
+                                    )
+                                    st.success("✅ Η κατάσταση του χρήστη ενημε렀θηκε!")
                                     st.rerun()
                                     
                     st.markdown("**Επαναφορά Κωδικού σε Default**")
@@ -1386,6 +1447,11 @@ def render_management_content():
                     if st.button("🔄 Επαναφορά Κωδικού", type="secondary", key="admin_reset_pwd_btn"):
                         if admin_reset_user_password(selected_user["UserID"], "nss12345"):
                             delete_all_user_sessions(selected_user["UserID"])
+                            write_system_log(
+                                st.session_state.user_id,
+                                "RESET_PASSWORD",
+                                f"Επαναφορά κωδικού για τον χρήστη {selected_user['Username']} στον προεπιλεγμένο (nss12345)"
+                            )
                             st.success(f"✅ Ο κωδικός για τον χρήστη '{selected_user['Username']}' επαναφέρθηκε σε `nss12345`!")
         else:
             st.info("Δεν βρέθηκαν χρήστες στη βάση δεδομένων.")
@@ -1433,6 +1499,11 @@ def render_management_content():
                 else:
                     selected_role = next(r for r in available_roles if r["RoleName"] == reg_role)
                     if register_new_user(reg_username, reg_password, reg_email, selected_role["RoleID"], reg_display_name):
+                        write_system_log(
+                            st.session_state.user_id,
+                            "CREATE_USER",
+                            f"Δημιουργία χρήστη: {reg_username} (Email: {reg_email}, Ρόλος: {reg_role}, Jira Name: {reg_display_name})"
+                        )
                         st.success(f"✅ Ο χρήστης '{reg_username}' δημιουργήθηκε με επιτυχία!")
                         st.session_state["fetched_display_name"] = ""
                         st.rerun()
@@ -1460,6 +1531,11 @@ def render_management_content():
             if new_group_name.strip():
                 member_ids = [user_options[m] for m in members]
                 if create_new_group_with_members(new_group_name.strip(), member_ids):
+                    write_system_log(
+                        st.session_state.user_id,
+                        "CREATE_GROUP",
+                        f"Δημιουργία ομάδας '{new_group_name.strip()}' με μέλη: {', '.join(members)}"
+                    )
                     st.success("✅ Η ομάδα δημιουργήθηκε με επιτυχία!")
                     st.rerun()
                 else:
@@ -1498,6 +1574,11 @@ def render_management_content():
                 if edit_group_name.strip():
                     new_member_ids = [user_options[m] for m in edit_members]
                     if update_group_with_members(group_id, edit_group_name.strip(), new_member_ids):
+                        write_system_log(
+                            st.session_state.user_id,
+                            "UPDATE_GROUP",
+                            f"Ενημέρωση ομάδας '{selected_group_opt}' σε '{edit_group_name.strip()}' με μέλη: {', '.join(edit_members)}"
+                        )
                         st.success("✅ Οι αλλαγές αποθηκεύτηκαν!")
                         st.rerun()
                     else:
@@ -1509,6 +1590,11 @@ def render_management_content():
             if st.session_state.user_role == "Administrator":
                 if st.button("🗑️ Διαγραφή Ομάδας", type="secondary", use_container_width=True):
                     if delete_group(group_id):
+                        write_system_log(
+                            st.session_state.user_id,
+                            "DELETE_GROUP",
+                            f"Διαγραφή ομάδας '{selected_group_opt}'"
+                        )
                         st.success("✅ Η ομάδα διαγράφηκε!")
                         st.rerun()
                     else:
