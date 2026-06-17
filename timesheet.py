@@ -22,6 +22,12 @@ if "logged_in" not in st.session_state:
     st.session_state.display_name = None
     st.session_state.default_project = None
 
+# Restore keys if they went missing due to an early rerun
+if "widget_backup" in st.session_state:
+    for k, v in st.session_state["widget_backup"].items():
+        if k not in st.session_state and v is not None:
+            st.session_state[k] = v
+
 # Ένεση Custom CSS για σμίκρυνση των στοιχείων
 st.markdown("""
     <style>
@@ -360,6 +366,20 @@ def apply_preset_filters(filters_json):
         if "group_key" in filters:
             st.session_state["group_key"] = filters["group_key"]
         st.session_state["filters_init"] = True
+        
+        # Keep the backup in sync
+        st.session_state["widget_backup"] = {
+            "proj_key": st.session_state.get("proj_key"),
+            "auth_key": st.session_state.get("auth_key"),
+            "charge_key": st.session_state.get("charge_key"),
+            "time_key": st.session_state.get("time_key"),
+            "partner_key": st.session_state.get("partner_key"),
+            "lsp_key": st.session_state.get("lsp_key"),
+            "comp_key": st.session_state.get("comp_key"),
+            "dates_key": st.session_state.get("dates_key"),
+            "group_key": st.session_state.get("group_key"),
+            "group_filter_selectbox_key": st.session_state.get("group_filter_selectbox_key"),
+        }
     except Exception as e:
         st.error(f"Σφάλμα εφαρμογής preview: {e}")
 
@@ -808,6 +828,8 @@ else:
         st.session_state.default_project = None
         if "filters_init" in st.session_state:
             del st.session_state["filters_init"]
+        if "widget_backup" in st.session_state:
+            del st.session_state["widget_backup"]
         st.toast("👋 Αποσυνδεθήκατε με επιτυχία.")
 
 st.sidebar.write("---")
@@ -829,6 +851,8 @@ if st.sidebar.button("🔄 Καθαρισμός Φίλτρων", type="primary",
         del st.session_state["active_preset_name"]
     if "active_preset_json" in st.session_state:
         del st.session_state["active_preset_json"]
+    if "widget_backup" in st.session_state:
+        del st.session_state["widget_backup"]
         
     st.rerun()
 
@@ -951,7 +975,6 @@ if st.session_state.logged_in:
         all_auth = sorted([str(x) for x in df["Assignee"].dropna().unique()])
         if user_name_to_select in all_auth:
             st.session_state["auth_key"] = [user_name_to_select]
-            st.rerun()
 
 sel_auth = st.sidebar.multiselect("👤 Assignee", options=assignee_options, key="auth_key")
 sel_charge = st.sidebar.multiselect("💰 Charge Type", options=sorted([str(x) for x in df["Charge Type"].dropna().unique()]), key="charge_key")
@@ -1723,3 +1746,17 @@ else:
         render_dashboard_content(df, last_updated, start, end, sel_proj, sel_auth, sel_charge, sel_time, sel_partner, sel_lsp, sel_comp, filtered_df)
     with main_tabs[1]:
         render_manual_content()
+
+# Backup current widget keys to prevent state loss on early reruns
+st.session_state["widget_backup"] = {
+    "proj_key": st.session_state.get("proj_key"),
+    "auth_key": st.session_state.get("auth_key"),
+    "charge_key": st.session_state.get("charge_key"),
+    "time_key": st.session_state.get("time_key"),
+    "partner_key": st.session_state.get("partner_key"),
+    "lsp_key": st.session_state.get("lsp_key"),
+    "comp_key": st.session_state.get("comp_key"),
+    "dates_key": st.session_state.get("dates_key"),
+    "group_key": st.session_state.get("group_key"),
+    "group_filter_selectbox_key": st.session_state.get("group_filter_selectbox_key"),
+}
