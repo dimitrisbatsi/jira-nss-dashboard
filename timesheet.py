@@ -1,4 +1,4 @@
-﻿import streamlit as st
+import streamlit as st
 import pandas as pd
 import requests
 import plotly.express as px
@@ -303,32 +303,32 @@ def update_user_preset(user_id, preset_name, filters_json):
         st.error(f"Σφάλμα ενημέρωσης preview: {e}")
         return False
 
-def get_user_default_preset(user_id):
+def get_user_default_preset(user_id, type_keyword="proj_key"):
     engine = get_db_engine()
     if not engine:
         return None
     from sqlalchemy import text
     try:
         with engine.connect() as conn:
-            query = text("SELECT PresetName, FiltersJSON FROM User_Presets WHERE UserID = :user_id AND IsDefault = 1")
-            res = conn.execute(query, {"user_id": user_id}).fetchone()
+            query = text("SELECT PresetName, FiltersJSON FROM User_Presets WHERE UserID = :user_id AND IsDefault = 1 AND FiltersJSON LIKE :keyword")
+            res = conn.execute(query, {"user_id": user_id, "keyword": f"%{type_keyword}%"}).fetchone()
             if res:
                 return {"PresetName": res[0], "FiltersJSON": res[1]}
     except Exception:
         pass
     return None
 
-def set_preset_as_default(user_id, preset_name):
+def set_preset_as_default(user_id, preset_name, type_keyword="proj_key"):
     engine = get_db_engine()
     if not engine:
         return False
     from sqlalchemy import text
     try:
         with engine.begin() as conn:
-            # 1. Clear IsDefault for all presets of this user
+            # 1. Clear IsDefault for presets of the same type for this user
             conn.execute(
-                text("UPDATE User_Presets SET IsDefault = 0 WHERE UserID = :user_id"),
-                {"user_id": user_id}
+                text("UPDATE User_Presets SET IsDefault = 0 WHERE UserID = :user_id AND FiltersJSON LIKE :keyword"),
+                {"user_id": user_id, "keyword": f"%{type_keyword}%"}
             )
             # 2. Set IsDefault = 1 for the selected preset
             conn.execute(
@@ -836,12 +836,35 @@ def rt_load_from_db():
         i.Status,
         i.ClosedDate,
         i.Type,
-        cf.FieldValue AS [SubCategory]
+        i.Components,
+        i.Resources,
+        u.Fullname AS [AssigneeName],
+        cf_cat.FieldValue AS [SubCategory],
+        cf_part.FieldValue AS [PartnerName],    -- Join 1 για Partner
+        cf_cust.FieldValue AS [CustomerName]     -- Join 2 για Customer
     FROM dbo.GIssues i
-    LEFT JOIN dbo.GIssueCustomFields cf 
-        ON i.IssueID = cf.IssueID 
-        AND cf.CustomFieldName LIKE '%category%'
-        AND cf.SourceApp = i.SourceApp
+    
+    -- Join για το όνομα του Assignee
+    LEFT JOIN dbo.GUsers u ON i.Assignee = u.UserID AND i.SourceApp = u.SourceApp
+        
+    -- Join για το SubCategory
+    LEFT JOIN dbo.GIssueCustomFields cf_cat 
+        ON i.IssueID = cf_cat.IssueID 
+        AND cf_cat.CustomFieldName LIKE '%category%'
+        AND cf_cat.SourceApp = i.SourceApp
+        
+    -- Join για το Partner Name
+    LEFT JOIN dbo.GIssueCustomFields cf_part 
+        ON i.IssueID = cf_part.IssueID 
+        AND cf_part.CustomFieldName = 'Partner Name'
+        AND cf_part.SourceApp = i.SourceApp
+        
+    -- Join για το Customer Name
+    LEFT JOIN dbo.GIssueCustomFields cf_cust 
+        ON i.IssueID = cf_cust.IssueID 
+        AND cf_cust.CustomFieldName = 'LSP Customer Name'
+        AND cf_cust.SourceApp = i.SourceApp
+        
     WHERE i.Type = 'Epic' AND i.SourceApp = 'Jira'
     """
     try:
@@ -889,6 +912,9 @@ def rt_convert_df_to_excel(df_res):
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df_res.to_excel(writer, index=False, sheet_name="KPIs")
     return output.getvalue()
+
+def rt_safe_mean(series):
+    return round(series.mean(), 2) if not series.dropna().empty else 0
 
 # --- 3. Φόρτωση από Βάση Δεδομένων ---
 
@@ -1295,7 +1321,7 @@ if st.session_state.logged_in:
                 st.markdown("⭐ **Προεπιλεγμένο Preview (αυτόματο)**")
             else:
                 if st.button("⭐ Ορισμός ως Προεπιλογή", type="secondary", use_container_width=True):
-                    if set_preset_as_default(st.session_state.user_id, active_preset_name):
+                    if set_preset_as_default(st.session_state.user_id, active_preset_name, "proj_key"):
                         st.toast("✅ Ορίστηκε ως προεπιλεγμένο preview!")
                         st.rerun()
             
@@ -2028,7 +2054,13 @@ def render_management_content():
                 st.caption("🔒 Μόνο οι Administrators μπορούν να διαγράψουν ομάδες.")
 
 def render_response_times_content():
-    st.subheader("⏱️ Χρόνοι Απόκρισης & KPIs (Jira Epic Tickets)", divider="blue")
+    # Header with title and load button side-by-side
+    col_title, col_btn = st.columns([4, 1])
+    with col_title:
+        st.subheader("⏱️ Χρόνοι Απόκρισης & KPIs (Jira Epic Tickets)", divider="blue")
+    with col_btn:
+        st.write("") # Spacing
+        load_clicked = st.button("🔄 Φόρτωση / Ανανέωση", type="primary", use_container_width=True)
 
     # Custom CSS for multiselect and metrics label spacing
     st.markdown("""
@@ -2051,7 +2083,7 @@ def render_response_times_content():
     if "rt_df" not in st.session_state:
         st.session_state.rt_df = None
 
-    if st.button("🔄 Φόρτωση Δεδομένων & KPIs από τη Βάση", type="primary"):
+    if load_clicked:
         with st.spinner("Φόρτωση δεδομένων από τη βάση..."):
             try:
                 df_issues = rt_load_from_db().rename(columns={"IssueId": "IssueID"})
@@ -2075,6 +2107,11 @@ def render_response_times_content():
                 BASE_URL = "https://epsilon-singularlogic.atlassian.net/browse/"
                 rt_df["JiraLink"] = BASE_URL + rt_df["IssueKey"].astype(str)
 
+                # Fillna for filters
+                for col in ["PartnerName", "CustomerName", "Components", "SubCategory"]:
+                    rt_df[col] = rt_df[col].fillna("None")
+                rt_df["AssigneeName"] = rt_df["AssigneeName"].fillna("Unassigned").astype(str).str.strip()
+
                 # KPI Calculation
                 rt_df["Creation->Assigned"] = (
                     rt_df["FirstAssignedDate"] - rt_df["CreationDate"]
@@ -2097,6 +2134,8 @@ def render_response_times_content():
                 ).dt.total_seconds() / 86400
 
                 st.session_state.rt_df = rt_df
+                if "rt_filters_initialized" in st.session_state:
+                    del st.session_state["rt_filters_initialized"]
                 st.toast("✅ Επιτυχής φόρτωση δεδομένων KPIs!")
             except Exception as e:
                 st.error(f"❌ Σφάλμα κατά τη σύνδεση ή τη φόρτωση από τη βάση: {e}")
@@ -2104,7 +2143,333 @@ def render_response_times_content():
     if st.session_state.rt_df is not None:
         rt_df = st.session_state.rt_df.copy()
 
-        # 1. Errors Detection
+        # Initialize filter session states if not already done
+        if "rt_filters_initialized" not in st.session_state:
+            has_loaded_default_preset = False
+            if st.session_state.logged_in:
+                default_preset = get_user_default_preset(st.session_state.user_id, "rt_filter_project")
+                if default_preset:
+                    import json
+                    try:
+                        filters = json.loads(default_preset["FiltersJSON"])
+                        for k, v in filters.items():
+                            if k == "rt_filter_date":
+                                st.session_state[k] = [pd.to_datetime(d).date() for d in v] if len(v) > 1 else pd.to_datetime(v[0]).date() if len(v) == 1 else datetime.now().date()
+                            else:
+                                st.session_state[k] = v
+                        st.session_state.rt_active_preset_name = default_preset["PresetName"]
+                        st.session_state.rt_active_preset_json = default_preset["FiltersJSON"]
+                        has_loaded_default_preset = True
+                    except Exception:
+                        pass
+            
+            if not has_loaded_default_preset:
+                st.session_state["rt_filter_project"] = sorted(rt_df["Project"].dropna().unique().tolist())
+                st.session_state["rt_filter_status"] = sorted(rt_df["Status"].dropna().unique().tolist())
+                st.session_state["rt_filter_subcategory"] = sorted(rt_df["SubCategory"].dropna().unique().tolist())
+                min_date = rt_df["CreationDate"].min().date() if not rt_df.empty else datetime.now().date()
+                max_date = rt_df["CreationDate"].max().date() if not rt_df.empty else datetime.now().date()
+                st.session_state["rt_filter_date"] = [min_date, max_date]
+                st.session_state["rt_filter_assignee"] = sorted(rt_df["AssigneeName"].dropna().unique().tolist())
+                st.session_state["rt_filter_components"] = sorted(rt_df["Components"].dropna().unique().tolist())
+                st.session_state["rt_filter_partners"] = sorted(rt_df["PartnerName"].dropna().unique().tolist())
+                st.session_state["rt_filter_customers"] = sorted(rt_df["CustomerName"].dropna().unique().tolist())
+            
+            st.session_state["rt_filters_initialized"] = True
+
+        # Saved Previews section (only visible if logged in)
+        if st.session_state.logged_in:
+            with st.expander("💾 Saved Previews (Presets) - Χρόνοι Απόκρισης", expanded=False):
+                presets = load_user_presets(st.session_state.user_id)
+                rt_presets = [p for p in presets if "rt_filter_project" in p["FiltersJSON"]]
+                
+                def on_rt_preset_change():
+                    val = st.session_state.rt_preset_select_widget
+                    if val and val != "-- Επιλέξτε Preview --":
+                        clean_name = val.replace(" (⭐ Προεπιλογή)", "")
+                        selected_preset = next((p for p in rt_presets if p["PresetName"] == clean_name), None)
+                        if selected_preset:
+                            import json
+                            try:
+                                filters = json.loads(selected_preset["FiltersJSON"])
+                                for k, v in filters.items():
+                                    if k == "rt_filter_date":
+                                        st.session_state[k] = [pd.to_datetime(d).date() for d in v] if len(v) > 1 else pd.to_datetime(v[0]).date() if len(v) == 1 else datetime.now().date()
+                                    else:
+                                        st.session_state[k] = v
+                                st.session_state.rt_active_preset_name = selected_preset["PresetName"]
+                                st.session_state.rt_active_preset_json = selected_preset["FiltersJSON"]
+                                st.toast("✅ Το Preview φορτώθηκε επιτυχώς!")
+                            except Exception as e:
+                                st.error(f"Σφάλμα κατά τη φόρτωση του preview: {e}")
+                    st.session_state.rt_preset_select_widget = "-- Επιλέξτε Preview --"
+
+                preset_names = ["-- Επιλέξτε Preview --"] + [
+                    f"{p['PresetName']} (⭐ Προεπιλογή)" if p.get("IsDefault") else p["PresetName"]
+                    for p in rt_presets
+                ]
+                
+                selected_preset_name = st.selectbox(
+                    "Φόρτωση Preview", 
+                    options=preset_names, 
+                    key="rt_preset_select_widget",
+                    on_change=on_rt_preset_change
+                )
+                
+                st.markdown("---")
+                new_preset_name = st.text_input("Όνομα νέου Preview (Χρόνοι Απόκρισης)", placeholder="π.χ. Epic Support KPIs", key="rt_new_preset_name")
+                if st.button("Αποθήκευση Τρέχοντος Φίλτρου", type="primary", use_container_width=True, key="rt_save_preset_btn"):
+                    if new_preset_name.strip():
+                        filters_dict = {
+                            "rt_filter_project": st.session_state.get("rt_filter_project", []),
+                            "rt_filter_status": st.session_state.get("rt_filter_status", []),
+                            "rt_filter_subcategory": st.session_state.get("rt_filter_subcategory", []),
+                            "rt_filter_date": [str(d) for d in st.session_state.get("rt_filter_date", [])] if isinstance(st.session_state.get("rt_filter_date"), (list, tuple)) else [str(st.session_state.get("rt_filter_date"))] if st.session_state.get("rt_filter_date") else [],
+                            "rt_filter_assignee": st.session_state.get("rt_filter_assignee", []),
+                            "rt_filter_components": st.session_state.get("rt_filter_components", []),
+                            "rt_filter_partners": st.session_state.get("rt_filter_partners", []),
+                            "rt_filter_customers": st.session_state.get("rt_filter_customers", [])
+                        }
+                        import json
+                        if save_user_preset(st.session_state.user_id, new_preset_name.strip(), json.dumps(filters_dict)):
+                            st.toast("✅ Το Preview αποθηκεύτηκε!")
+                            st.rerun()
+                    else:
+                        st.error("Εισάγετε ένα έγκυρο όνομα")
+                        
+                rt_active_preset_name = st.session_state.get("rt_active_preset_name")
+                if rt_active_preset_name:
+                    st.markdown("---")
+                    st.markdown(f"📂 **Ενεργό Preview:** `{rt_active_preset_name}`")
+                    
+                    active_preset = next((p for p in rt_presets if p["PresetName"] == rt_active_preset_name), None)
+                    is_default_active = active_preset.get("IsDefault", False) if active_preset else False
+                    
+                    if is_default_active:
+                        st.markdown("⭐ **Προεπιλεγμένο Preview (αυτόματο)**")
+                    else:
+                        if st.button("⭐ Ορισμός ως Προεπιλογή", type="secondary", use_container_width=True, key="rt_set_default_preset_btn"):
+                            if set_preset_as_default(st.session_state.user_id, rt_active_preset_name, "rt_filter_project"):
+                                st.toast("✅ Ορίστηκε ως προεπιλεγμένο preview!")
+                                st.rerun()
+                                
+                    col_update, col_reload, col_close = st.columns(3)
+                    with col_update:
+                        if st.button("💾 Ενημέρωση", type="primary", use_container_width=True, key="rt_update_preset_btn"):
+                            filters_dict = {
+                                "rt_filter_project": st.session_state.get("rt_filter_project", []),
+                                "rt_filter_status": st.session_state.get("rt_filter_status", []),
+                                "rt_filter_subcategory": st.session_state.get("rt_filter_subcategory", []),
+                                "rt_filter_date": [str(d) for d in st.session_state.get("rt_filter_date", [])] if isinstance(st.session_state.get("rt_filter_date"), (list, tuple)) else [str(st.session_state.get("rt_filter_date"))] if st.session_state.get("rt_filter_date") else [],
+                                "rt_filter_assignee": st.session_state.get("rt_filter_assignee", []),
+                                "rt_filter_components": st.session_state.get("rt_filter_components", []),
+                                "rt_filter_partners": st.session_state.get("rt_filter_partners", []),
+                                "rt_filter_customers": st.session_state.get("rt_filter_customers", [])
+                            }
+                            import json
+                            new_json = json.dumps(filters_dict)
+                            if update_user_preset(st.session_state.user_id, rt_active_preset_name, new_json):
+                                st.session_state.rt_active_preset_json = new_json
+                                st.toast("✅ Το Preview ενημερώθηκε επιτυχώς!")
+                    with col_reload:
+                        if st.button("🔄 Επαναφορά", type="secondary", use_container_width=True, key="rt_reload_preset_btn"):
+                            if "rt_active_preset_json" in st.session_state:
+                                import json
+                                filters = json.loads(st.session_state.rt_active_preset_json)
+                                for k, v in filters.items():
+                                    if k == "rt_filter_date":
+                                        st.session_state[k] = [pd.to_datetime(d).date() for d in v] if len(v) > 1 else pd.to_datetime(v[0]).date() if len(v) == 1 else datetime.now().date()
+                                    else:
+                                        st.session_state[k] = v
+                                st.toast("🔄 Τα αρχικά φίλτρα του Preview επαναφέρθηκαν!")
+                                st.rerun()
+                    with col_close:
+                        if st.button("❌ Κλείσιμο", type="secondary", use_container_width=True, key="rt_close_preset_btn"):
+                            if "rt_active_preset_name" in st.session_state:
+                                del st.session_state["rt_active_preset_name"]
+                            if "rt_active_preset_json" in st.session_state:
+                                del st.session_state["rt_active_preset_json"]
+                            st.rerun()
+
+                    st.markdown("---")
+                    all_users = load_all_active_users()
+                    other_users = [u for u in all_users if u["UserID"] != st.session_state.user_id]
+                    other_user_names = [u["Username"] for u in other_users]
+                    
+                    st.markdown("**Κοινοποίηση σε άλλον χρήστη:**")
+                    share_with = st.selectbox("Επιλέξτε Χρήστη", options=["-- Επιλογή --"] + other_user_names, key="rt_preset_share_user_select")
+                    if st.button("Κοινοποίηση", type="secondary", use_container_width=True, key="rt_preset_share_btn"):
+                        if share_with != "-- Επιλογή --":
+                            target_user = next(u for u in other_users if u["Username"] == share_with)
+                            shared_name = f"{rt_active_preset_name} (Shared by {st.session_state.username})"
+                            if save_user_preset(target_user["UserID"], shared_name, st.session_state.rt_active_preset_json):
+                                st.success(f"Κοινοποιήθηκε στον χρήστη {share_with}!")
+
+        # 1. Filters Grid
+        col_hdr, col_rst = st.columns([3, 1])
+        with col_hdr:
+            st.markdown("#### 🔍 Φίλτρα Αναζήτησης KPIs")
+        with col_rst:
+            if st.button("🔄 Καθαρισμός Φίλτρων KPIs", type="secondary", use_container_width=True, key="rt_clear_filters_btn"):
+                rt_filter_keys = [
+                    "rt_filter_project",
+                    "rt_filter_status",
+                    "rt_filter_subcategory",
+                    "rt_filter_date",
+                    "rt_filter_assignee",
+                    "rt_filter_components",
+                    "rt_filter_partners",
+                    "rt_filter_customers",
+                    "rt_active_preset_name",
+                    "rt_active_preset_json"
+                ]
+                for k in rt_filter_keys:
+                    if k in st.session_state:
+                        del st.session_state[k]
+                st.toast("🔄 Τα φίλτρα KPIs καθαρίστηκαν!")
+                st.rerun()
+        
+        # Row 1 (4 columns)
+        fcol1, fcol2, fcol3, fcol4 = st.columns(4)
+        # Row 2 (4 columns)
+        fcol5, fcol6, fcol7, fcol8 = st.columns(4)
+
+        with fcol1:
+            all_projects = sorted(rt_df["Project"].dropna().unique().tolist())
+            selected_projects = st.multiselect("Ανά Project:", options=all_projects, key="rt_filter_project")
+            if not selected_projects: selected_projects = all_projects
+
+        with fcol2:
+            all_statuses = sorted(rt_df["Status"].dropna().unique().tolist())
+            selected_statuses = st.multiselect("Ανά Status:", options=all_statuses, key="rt_filter_status")
+            if not selected_statuses: selected_statuses = all_statuses
+
+        with fcol3:
+            all_subcategories = sorted(rt_df["SubCategory"].dropna().unique().tolist())
+            selected_subcategories = st.multiselect("Ανά Sub Category:", options=all_subcategories, key="rt_filter_subcategory")
+            if not selected_subcategories: selected_subcategories = all_subcategories
+
+        with fcol4:
+            min_date = rt_df["CreationDate"].min().date() if not rt_df.empty else datetime.now().date()
+            max_date = rt_df["CreationDate"].max().date() if not rt_df.empty else datetime.now().date()
+            date_range = st.date_input(
+                "Εύρος Ημερολογίου (Creation):",
+                min_value=min_value_date,
+                max_value=max_value_date,
+                key="rt_filter_date"
+            ) if (min_value_date := min_date) and (max_value_date := max_date) else None # keep simple
+
+        with fcol5:
+            all_assignees = sorted(rt_df["AssigneeName"].dropna().unique().tolist())
+            selected_assignees = st.multiselect("Ανά Assignee:", options=all_assignees, key="rt_filter_assignee")
+            if not selected_assignees: selected_assignees = all_assignees
+
+        with fcol6:
+            all_components = sorted(rt_df["Components"].dropna().unique().tolist())
+            selected_components = st.multiselect("Ανά Components:", options=all_components, key="rt_filter_components")
+            if not selected_components: selected_components = all_components
+
+        with fcol7:
+            all_partners = sorted(rt_df["PartnerName"].dropna().unique().tolist())
+            selected_partners = st.multiselect("Ανά Partner Name:", options=all_partners, key="rt_filter_partners")
+            if not selected_partners: selected_partners = all_partners
+
+        with fcol8:
+            all_customers = sorted(rt_df["CustomerName"].dropna().unique().tolist())
+            selected_customers = st.multiselect("Ανά LSP Customer:", options=all_customers, key="rt_filter_customers")
+            if not selected_customers: selected_customers = all_customers
+
+        # Parse Date Range
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            start_date, end_date = date_range
+        else:
+            start_date = date_range[0] if (isinstance(date_range, list) or isinstance(date_range, tuple)) and len(date_range) > 0 else datetime.now().date()
+            end_date = start_date
+
+        # Apply Filters
+        filtered_rt_df = rt_df[
+            (rt_df["Status"].isin(selected_statuses)) &
+            (rt_df["Project"].isin(selected_projects)) &
+            (rt_df["SubCategory"].isin(selected_subcategories)) &
+            (rt_df["Components"].isin(selected_components)) &
+            (rt_df["PartnerName"].isin(selected_partners)) &
+            (rt_df["CustomerName"].isin(selected_customers)) &
+            (rt_df["AssigneeName"].isin(selected_assignees)) &
+            (rt_df["CreationDate"].dt.date >= start_date) &
+            (rt_df["CreationDate"].dt.date <= end_date)
+        ].copy()
+
+        # Check for empty dataframe
+        if filtered_rt_df.empty:
+            st.warning("Δεν βρέθηκαν αποτελέσματα με τα τρέχοντα φίλτρα.")
+        else:
+            # 2. KPI Summary
+            st.write("<br>", unsafe_allow_html=True)
+            st.subheader("📊 KPI Summary")
+            col1, col2, col3, col4, col5, col6 = st.columns(6)
+
+            col1.metric("Total Tickets", len(filtered_rt_df))
+            col2.metric("Creation → Assigned (days)", rt_safe_mean(filtered_rt_df["Creation->Assigned"]))
+            col3.metric("Creation → First Response (days)", rt_safe_mean(filtered_rt_df["Creation->FirstResponse"]))
+            col4.metric("Assigned → First Response (days)", rt_safe_mean(filtered_rt_df["Assigned->FirstResponse"]))
+            col5.metric("Assigned → Closed (days)", rt_safe_mean(filtered_rt_df["Assigned->Closed"]))
+            col6.metric("Creation → Closed (days)", rt_safe_mean(filtered_rt_df["Creation->Closed"]))
+
+            st.markdown("---")
+
+            # 3. Column Ordering & Config
+            column_order = [
+                "ProjectId", "IssueKey", "Project", "Type", "JiraLink", "AssigneeName", "Components", 
+                "PartnerName", "CustomerName", "Status", "SubCategory", "CreationDate", 
+                "FirstAssignedDate", "FirstResponseDate", "ClosedDate",
+                "Creation->Assigned", "Creation->FirstResponse", 
+                "Assigned->FirstResponse", "Assigned->Closed", "Creation->Closed"
+            ]
+            existing_cols = [c for c in column_order if c in filtered_rt_df.columns]
+            display_df = filtered_rt_df[existing_cols]
+
+            st.subheader("📊 KPIs by Issue")
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                height=500,
+                column_config={
+                    "ProjectId": st.column_config.NumberColumn("Project ID", width=90, format="%d"),
+                    "IssueKey": st.column_config.TextColumn("Ticket Key", width=110),
+                    "Project": st.column_config.TextColumn("Project", width=100),
+                    "Type": st.column_config.TextColumn("Type", width=90),
+                    "JiraLink": st.column_config.LinkColumn("Jira", width=90, display_text="Open"),
+                    "AssigneeName": st.column_config.TextColumn("Assignee", width=150),
+                    "Components": st.column_config.TextColumn("Components", width=150),
+                    "PartnerName": st.column_config.TextColumn("Partner Name", width=200),
+                    "CustomerName": st.column_config.TextColumn("Customer Name", width=200),
+                    "Status": st.column_config.TextColumn("Status", width=110),
+                    "SubCategory": st.column_config.TextColumn("Sub Category", width=180),
+                    "CreationDate": st.column_config.DatetimeColumn("Creation Date", width=160, format="DD/MM/YYYY HH:mm"),
+                    "FirstAssignedDate": st.column_config.DatetimeColumn("First Assigned Date", width=160, format="DD/MM/YYYY HH:mm"),
+                    "FirstResponseDate": st.column_config.DatetimeColumn("First Response Date", width=160, format="DD/MM/YYYY HH:mm"),
+                    "ClosedDate": st.column_config.DatetimeColumn("Closed Date", width=160, format="DD/MM/YYYY HH:mm"),
+                    "Creation->Assigned": st.column_config.NumberColumn("Creation → Assigned (Days)", width=240, format="%.2f"),
+                    "Creation->FirstResponse": st.column_config.NumberColumn("Creation → First Response (Days)", width=240, format="%.2f"),
+                    "Assigned->FirstResponse": st.column_config.NumberColumn("Assigned → First Response (Days)", width=240, format="%.2f"),
+                    "Assigned->Closed": st.column_config.NumberColumn("Assigned → Closed (Days)", width=240, format="%.2f"),
+                    "Creation->Closed": st.column_config.NumberColumn("Creation → Closed (Days)", width=220, format="%.2f"),
+                }
+            )
+
+            # Download Button
+            excel_data = rt_convert_df_to_excel(display_df)
+            st.download_button(
+                label="📥 Λήψη σε Excel",
+                data=excel_data,
+                file_name="jira_kpi_filtered.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
+            )
+
+        st.markdown("---")
+
+        # 4. Data Errors Expander
         errors_df = rt_df[
             (rt_df["Creation->Assigned"] < 0) |
             (rt_df["Creation->FirstResponse"] < 0) |
@@ -2113,112 +2478,6 @@ def render_response_times_content():
             (rt_df["Creation->Closed"] < 0)
         ][["IssueKey", "JiraLink", "Status", "CreationDate", "FirstAssignedDate", "FirstResponseDate", "ClosedDate"]].copy()
 
-        # 2. KPI Summary
-        st.write("<br>", unsafe_allow_html=True)
-        st.subheader("📊 KPI Summary")
-        col1, col2, col3, col4, col5, col6 = st.columns(6)
-
-        col1.metric("Total Tickets", len(rt_df))
-        col2.metric("Creation → Assigned (days)", round(rt_df["Creation->Assigned"].mean(), 2))
-        col3.metric("Creation → First Response (days)", round(rt_df["Creation->FirstResponse"].mean(), 2))
-        col4.metric("Assigned → First Response (days)", round(rt_df["Assigned->FirstResponse"].mean(), 2))
-        col5.metric("Assigned → Closed (days)", round(rt_df["Assigned->Closed"].mean(), 2))
-        col6.metric("Creation → Closed (days)", round(rt_df["Creation->Closed"].mean(), 2))
-
-        st.markdown("---")
-
-        # 3. KPIs by Project Table
-        st.subheader("📊 KPIs by Project")
-        project_kpis = rt_df.groupby("Project").agg(
-            TotalTickets=("IssueID", "count"),
-            Avg_Creation_Assigned=("Creation->Assigned", "mean"),
-            Avg_Creation_FirstResponse=("Creation->FirstResponse", "mean"),
-            Avg_Assigned_FirstResponse=("Assigned->FirstResponse", "mean"),
-            Avg_Assigned_Closed=("Assigned->Closed", "mean"),
-            Avg_Creation_Closed=("Creation->Closed", "mean")
-        ).reset_index()
-        st.dataframe(project_kpis, use_container_width=True, hide_index=True)
-
-        st.markdown("---")
-
-        # 4. Filters & Full KPI Table
-        st.subheader("📊 Full KPI Table")
-
-        # Local Filters inside an expander
-        with st.expander("🔍 Φίλτρα Αναζήτησης KPIs", expanded=True):
-            fcol1, fcol2, fcol3, fcol4 = st.columns(4)
-
-            with fcol1:
-                all_statuses = sorted(rt_df["Status"].dropna().unique().tolist())
-                selected_statuses = st.multiselect("Ανά Status:", options=all_statuses, default=all_statuses, key="rt_filter_status")
-            with fcol2:
-                all_projects = sorted(rt_df["Project"].dropna().unique().tolist())
-                selected_projects = st.multiselect("Ανά Project:", options=all_projects, default=all_projects, key="rt_filter_project")
-            with fcol3:
-                all_subcategories = sorted(rt_df["SubCategory"].dropna().unique().tolist())
-                selected_subcategories = st.multiselect("Ανά Sub Category:", options=all_subcategories, default=all_subcategories, key="rt_filter_subcategory")
-            with fcol4:
-                min_date = rt_df["CreationDate"].min().date() if not rt_df.empty else datetime.now().date()
-                max_date = rt_df["CreationDate"].max().date() if not rt_df.empty else datetime.now().date()
-                date_range = st.date_input(
-                    "Εύρος Ημερολογίου (Creation):",
-                    value=(min_date, max_date),
-                    min_value=min_date,
-                    max_value=max_date,
-                    key="rt_filter_date"
-                )
-
-        # Apply local filters
-        if isinstance(date_range, tuple) and len(date_range) == 2:
-            start_date, end_date = date_range
-        else:
-            start_date = date_range[0] if isinstance(date_range, list) or isinstance(date_range, tuple) else date_range
-            end_date = max_date
-
-        filtered_rt_df = rt_df[
-            (rt_df["Status"].isin(selected_statuses)) &
-            (rt_df["Project"].isin(selected_projects)) &
-            (rt_df["SubCategory"].isin(selected_subcategories)) &
-            (rt_df["CreationDate"].dt.date >= start_date) &
-            (rt_df["CreationDate"].dt.date <= end_date)
-        ].copy()
-
-        # Render Table
-        st.dataframe(
-            filtered_rt_df,
-            use_container_width=True,
-            height=500,
-            column_config={
-                "IssueID": st.column_config.NumberColumn("ID", width=70, format="%d"),
-                "IssueKey": st.column_config.TextColumn("Ticket Key", width=110),
-                "JiraLink": st.column_config.LinkColumn("Jira", width=90, display_text="Open"),
-                "SubCategory": st.column_config.TextColumn("Sub Category", width=180),
-                "Status": st.column_config.TextColumn("Status", width=110),
-                "CreationDate": st.column_config.DatetimeColumn("Creation Date", width=160, format="DD/MM/YYYY HH:mm"),
-                "FirstAssignedDate": st.column_config.DatetimeColumn("First Assigned Date", width=160, format="DD/MM/YYYY HH:mm"),
-                "FirstResponseDate": st.column_config.DatetimeColumn("First Response Date", width=160, format="DD/MM/YYYY HH:mm"),
-                "ClosedDate": st.column_config.DatetimeColumn("Closed Date", width=160, format="DD/MM/YYYY HH:mm"),
-                "Creation->Assigned": st.column_config.NumberColumn("Creation → Assigned (Days)", width=240, format="%.2f"),
-                "Creation->FirstResponse": st.column_config.NumberColumn("Creation → First Response (Days)", width=240, format="%.2f"),
-                "Assigned->FirstResponse": st.column_config.NumberColumn("Assigned → First Response (Days)", width=240, format="%.2f"),
-                "Assigned->Closed": st.column_config.NumberColumn("Assigned → Closed (Days)", width=240, format="%.2f"),
-                "Creation->Closed": st.column_config.NumberColumn("Creation → Closed (Days)", width=220, format="%.2f"),
-            }
-        )
-
-        # Download Button
-        excel_data = rt_convert_df_to_excel(filtered_rt_df)
-        st.download_button(
-            label="📥 Λήψη σε Excel",
-            data=excel_data,
-            file_name="jira_kpi_filtered.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary"
-        )
-
-        st.markdown("---")
-
-        # 5. Data Errors Expander
         with st.expander("⚠️ Πίνακας Ελέγχου Δεδομένων (Λάθη Χρηστών)", expanded=False):
             st.warning(f"Βρέθηκαν {len(errors_df)} tickets με αρνητικούς χρόνους λόγω λάθος καταχώρησης ημερομηνιών στο Jira.")
             if not errors_df.empty:
