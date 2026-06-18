@@ -7,12 +7,21 @@ import os
 import re
 import hashlib
 import pyodbc
+import time
 from datetime import datetime
 
-APP_VERSION = "26.3.3 (2026-06-17)"
+import time
+
+# --- ETL Modules Imports ---
+from modules.test_projects_etl import run_real_projects_etl, run_jira_projects_etl
+from modules.test_users_etl import run_users_etl, run_jira_users_etl
+from modules.test_components_etl import run_components_etl, run_jira_components_etl
+from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl
+
+APP_VERSION = "26.4.0 (2026-06-18)"
 
 # --- 1. Ρυθμίσεις Σελίδας ---
-st.set_page_config(layout="wide", page_title="NSS Timesheet Dashboard", page_icon="📊")
+st.set_page_config(layout="wide", page_title="NSS Support Hub", page_icon="📊")
 
 # Initialize Session State Variables
 if "logged_in" not in st.session_state:
@@ -684,6 +693,119 @@ def delete_group(group_id):
     except Exception as e:
         st.error(f"Σφάλμα: {e}")
         return False
+    
+# --- ContentHub Helpers (Announcements & Pro Tips) ---
+def load_latest_content(content_type):
+    engine = get_db_engine()
+    if not engine: return None
+    from sqlalchemy import text
+    try:
+        with engine.connect() as conn:
+            query = text("""
+                SELECT TOP 1 Title, Body, CreatedAt FROM ContentHub 
+                WHERE ContentType = :ctype AND IsActive = 1 ORDER BY CreatedAt DESC
+            """)
+            res = conn.execute(query, {"ctype": content_type}).fetchone()
+            return {"Title": res[0], "Body": res[1], "CreatedAt": res[2]} if res else None
+    except Exception: return None
+
+def load_all_content_admin():
+    engine = get_db_engine()
+    if not engine: return []
+    from sqlalchemy import text
+    try:
+        with engine.connect() as conn:
+            query = text("SELECT ContentID, Title, Body, ContentType, IsActive FROM ContentHub ORDER BY CreatedAt DESC")
+            res = conn.execute(query).fetchall()
+            return [{"ContentID": r[0], "Title": r[1], "Body": r[2], "ContentType": r[3], "IsActive": bool(r[4])} for r in res]
+    except Exception: return []
+
+def save_content_item(title, body, content_type, user_id):
+    engine = get_db_engine()
+    if not engine: return False
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO ContentHub (Title, Body, ContentType, UserID) VALUES (:title, :body, :ctype, :uid)"),
+                {"title": title, "body": body, "ctype": content_type, "uid": user_id}
+            )
+        return True
+    except Exception: return False
+
+def update_content_item(content_id, title, body, content_type, is_active):
+    engine = get_db_engine()
+    if not engine: return False
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE ContentHub SET Title = :title, Body = :body, ContentType = :ctype, IsActive = :active WHERE ContentID = :cid"),
+                {"title": title, "body": body, "ctype": content_type, "active": 1 if is_active else 0, "cid": content_id}
+            )
+        return True
+    except Exception: return False
+
+def delete_content_item(content_id):
+    engine = get_db_engine()
+    if not engine: return False
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM ContentHub WHERE ContentID = :cid"), {"cid": content_id})
+        return True
+    except Exception: return False
+
+
+# --- Knowledge Base Helpers ---
+def load_kb_articles(only_active=True):
+    engine = get_db_engine()
+    if not engine: return []
+    from sqlalchemy import text
+    try:
+        with engine.connect() as conn:
+            sql = "SELECT ArticleID, Title, Category, Content, IsActive FROM KBArticles"
+            if only_active: sql += " WHERE IsActive = 1"
+            sql += " ORDER BY Category, CreatedAt DESC"
+            res = conn.execute(text(sql)).fetchall()
+            return [{"ArticleID": r[0], "Title": r[1], "Category": r[2], "Content": r[3], "IsActive": bool(r[4])} for r in res]
+    except Exception: return []
+
+def save_kb_article(title, category, content, user_id):
+    engine = get_db_engine()
+    if not engine: return False
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO KBArticles (Title, Category, Content, UserID) VALUES (:title, :cat, :content, :uid)"),
+                {"title": title, "cat": category, "content": content, "uid": user_id}
+            )
+        return True
+    except Exception: return False
+
+def update_kb_article(article_id, title, category, content, is_active):
+    engine = get_db_engine()
+    if not engine: return False
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE KBArticles SET Title = :title, Category = :cat, Content = :content, IsActive = :active WHERE ArticleID = :aid"),
+                {"title": title, "cat": category, "content": content, "active": 1 if is_active else 0, "aid": article_id}
+            )
+        return True
+    except Exception: return False
+
+def delete_kb_article(article_id):
+    engine = get_db_engine()
+    if not engine: return False
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM KBArticles WHERE ArticleID = :aid"), {"aid": article_id})
+        return True
+    except Exception: return False
 
 # --- Response Times DB Configuration & Helpers ---
 RT_DB_SERVER = os.getenv("DB_SERVER", "dev-gemini")
@@ -917,7 +1039,7 @@ else:
         st.toast("👋 Αποσυνδεθήκατε με επιτυχία.")
 
 st.sidebar.write("---")
-st.sidebar.markdown('<h1 class="stHeadingSidebar">🎛️ Φίλτρα Αναζήτησης</h1>', unsafe_allow_html=True)
+st.sidebar.markdown('<h1 class="stHeadingSidebar">🎛️ Φίλτρα Αναζήτησης Timesheet</h1>', unsafe_allow_html=True)
 
 if not st.session_state.logged_in:
     st.sidebar.info("💡 Συνδεθείτε για να αποθηκεύετε τα φίλτρα σας σε Previews!")
@@ -1253,9 +1375,29 @@ filtered_df = df[mask]
 
 def render_dashboard_content(df, last_updated, start, end, sel_proj, sel_auth, sel_charge, sel_time, sel_partner, sel_lsp, sel_comp, filtered_df):
     col_title, col_time = st.columns([3, 1])
+
+    # --- Top Banner: Latest Announcement & Pro Tip ---
+    latest_announcement = load_latest_content("Announcement")
+    latest_protip = load_latest_content("ProTip")
+    
+    if latest_announcement or latest_protip:
+        col_ann, col_tip = st.columns(2)
+        
+        with col_ann:
+            if latest_announcement:
+                st.info(f"📢 **Πρόσφατη Ανακοίνωση:** {latest_announcement['Title']}")
+                with st.expander("Διαβάστε την ανακοίνωση"):
+                    st.markdown(latest_announcement['Body'])
+                    
+        with col_tip:
+            if latest_protip:
+                st.success(f"💡 **Weekly Pro Tip:** {latest_protip['Title']}")
+                with st.expander("Δείτε το Tip"):
+                    st.markdown(latest_protip['Body'])
+        st.write("<br>", unsafe_allow_html=True)
     
     with col_title:
-        st.title("📊 NSS Support Dashboard")
+        st.title("📊 NSS Support Hub")
         
     with col_time:
         st.write("") 
@@ -1446,6 +1588,173 @@ def render_dashboard_content(df, last_updated, start, end, sel_proj, sel_auth, s
     
     fig_comp.update_layout(height=800) 
     st.plotly_chart(fig_comp, width='stretch')
+
+def render_announcements_and_tips():
+    st.subheader("📢 Ανακοινώσεις & Pro Tips", divider="blue")
+    
+    is_management = st.session_state.user_role in ["Administrator", "Team Leader"]
+    
+    # Χτίζουμε τα sub-tabs δυναμικά βάσει δικαιωμάτων
+    tabs_to_show = ["📢 Ανακοινώσεις", "💡 Pro Tips"]
+    if is_management:
+        tabs_to_show.append("⚙️ Διαχείριση (CRUD)")
+        
+    sub_tabs = st.tabs(tabs_to_show)
+    
+    # Βοηθητική συνάρτηση για rendering λίστας χωρίς expander
+    def show_content_list(ctype):
+        items = load_all_content_admin()
+        # Φιλτράρισμα: κρατάμε μόνο όσα είναι ενεργά και ανήκουν στη σωστή κατηγορία
+        filtered_items = [i for i in items if i['ContentType'] == ctype and i['IsActive']]
+        
+        if not filtered_items:
+            st.info(f"Δεν υπάρχουν ενεργές εγγραφές για {ctype}.")
+        else:
+            for item in filtered_items:
+                with st.container(border=True):
+                    st.markdown(f"#### {item['Title']}")
+                    st.markdown("---")
+                    st.markdown(item['Body'])
+    
+    # Tab 1: Ανακοινώσεις
+    with sub_tabs[0]:
+        show_content_list("Announcement")
+        
+    # Tab 2: Pro Tips
+    with sub_tabs[1]:
+        show_content_list("ProTip")
+        
+    # Tab 3: Διαχείριση (Μόνο για Ηγεσία)
+    if is_management:
+        with sub_tabs[2]:
+            mode = st.radio("Ενέργεια", ["➕ Προσθήκη Νέου", "✏️ Επεξεργασία / Διαγραφή"], horizontal=True)
+            
+            if mode == "➕ Προσθήκη Νέου":
+                with st.form("add_content_form", clear_on_submit=True):
+                    c_type = st.selectbox("Τύπος Περιεχομένου", ["Announcement", "ProTip"])
+                    title = st.text_input("Τίτλος")
+                    body = st.text_area("Περιεχόμενο (Markdown)", height=200)
+                    if st.form_submit_button("Δημοσίευση", type="primary"):
+                        if title.strip() and body.strip():
+                            if save_content_item(title.strip(), body.strip(), c_type, st.session_state.user_id):
+                                write_system_log(st.session_state.user_id, f"CREATE_{c_type.upper()}", f"Τίτλος: {title}")
+                                st.toast("✅ Επιτυχής δημοσίευση!")
+                                st.rerun()
+                        else: st.error("Συμπληρώστε όλα τα πεδία.")
+                        
+            else:
+                items = load_all_content_admin()
+                if not items:
+                    st.info("Δεν υπάρχει περιεχόμενο.")
+                else:
+                    item_options = {f"[{i['ContentType']}] {i['Title']}": i for i in items}
+                    selected_option = st.selectbox("Επιλέξτε στοιχείο προς διαχείριση", ["-- Επιλογή --"] + list(item_options.keys()))
+                    
+                    if selected_option != "-- Επιλογή --":
+                        item = item_options[selected_option]
+                        with st.container(border=True):
+                            edit_title = st.text_input("Τίτλος", value=item['Title'])
+                            edit_type = st.selectbox("Τύπος", ["Announcement", "ProTip"], index=0 if item['ContentType'] == "Announcement" else 1)
+                            edit_body = st.text_area("Περιεχόμενο (Markdown)", value=item['Body'], height=200)
+                            edit_active = st.checkbox("Ενεργό (Προβάλλεται)", value=item['IsActive'])
+                            
+                            col_up, col_del = st.columns(2)
+                            with col_up:
+                                if st.button("💾 Αποθήκευση Αλλαγών", type="primary", use_container_width=True):
+                                    if update_content_item(item['ContentID'], edit_title, edit_body, edit_type, edit_active):
+                                        write_system_log(st.session_state.user_id, "UPDATE_CONTENT", f"ID: {item['ContentID']}")
+                                        st.toast("✅ Οι αλλαγές αποθηκεύτηκαν!")
+                                        st.rerun()
+                            with col_del:
+                                if st.button("🗑️ Μόνιμη Διαγραφή", type="secondary", use_container_width=True):
+                                    if delete_content_item(item['ContentID']):
+                                        write_system_log(st.session_state.user_id, "DELETE_CONTENT", f"ID: {item['ContentID']}")
+                                        st.toast("🗑️ Το στοιχείο διαγράφηκε!")
+                                        st.rerun()
+
+# Η συνάρτηση που δημιουργεί το popup παράθυρο για τα άρθρα
+@st.dialog("📖 Ανάγνωση Άρθρου", width="large")
+def open_article_modal(title, content):
+    st.subheader(title)
+    st.markdown("---")
+    st.markdown(content)
+
+def render_knowledge_base_content():
+    st.subheader("💡 Εσωτερική Βάση Γνώσης (Knowledge Base)", divider="blue")
+    
+    is_management = st.session_state.user_role in ["Administrator", "Team Leader"]
+    
+    def show_articles():
+        articles = load_kb_articles(only_active=True)
+        if not articles:
+            st.info("Δεν υπάρχουν ακόμη διαθέσιμα άρθρα διαδικασιών.")
+        else:
+            categories = sorted(list(set([a['Category'] for a in articles])))
+            selected_cat = st.selectbox("📂 Φιλτράρισμα ανά Κατηγορία", ["Όλες οι Κατηγορίες"] + categories)
+            
+            for art in articles:
+                if selected_cat != "Όλες οι Κατηγορίες" and art['Category'] != selected_cat:
+                    continue
+                
+                # Αντί για expander, φτιάχνουμε μια "κάρτα" με κουμπί
+                with st.container(border=True):
+                    col_title, col_btn = st.columns([4, 1])
+                    with col_title:
+                        st.markdown(f"**{art['Title']}**")
+                        st.caption(f"📁 Κατηγορία: {art['Category']}")
+                    with col_btn:
+                        # Με το πάτημα καλούμε το modal
+                        if st.button("📖 Διάβασμα", key=f"read_kb_{art['ArticleID']}", use_container_width=True):
+                            open_article_modal(art['Title'], art['Content'])
+
+    if is_management:
+        tab_view, tab_manage = st.tabs(["📖 Ανάγνωση Άρθρων", "⚙️ Διαχείριση Άρθρων (CRUD)"])
+        with tab_view:
+            show_articles()
+            
+        with tab_manage:
+            kb_mode = st.radio("Λειτουργία KB", ["➕ Νέο Άρθρο", "✏️ Επεξεργασία Υπάρχοντος"], horizontal=True)
+            if kb_mode == "➕ Νέο Άρθρο":
+                with st.form("new_kb_form", clear_on_submit=True):
+                    cat = st.text_input("Κατηγορία (π.χ. Διαδικασίες Jira, Πολιτική Αδειών)")
+                    title = st.text_input("Τίτλος Άρθρου")
+                    content = st.text_area("Περιεχόμενο (Markdown)", height=300)
+                    if st.form_submit_button("Αποθήκευση Άρθρου", type="primary"):
+                        if title.strip() and cat.strip() and content.strip():
+                            if save_kb_article(title.strip(), cat.strip(), content.strip(), st.session_state.user_id):
+                                write_system_log(st.session_state.user_id, "CREATE_KB_ARTICLE", title)
+                                st.toast("✅ Το άρθρο αποθηκεύτηκε!")
+                                st.rerun()
+                        else: 
+                            st.error("Συμπληρώστε όλα τα πεδία.")
+            else:
+                all_articles = load_kb_articles(only_active=False)
+                if not all_articles:
+                    st.info("Δεν υπάρχουν άρθρα.")
+                else:
+                    art_options = {f"[{a['Category']}] {a['Title']}": a for a in all_articles}
+                    sel_art_opt = st.selectbox("Επιλέξτε άρθρο", ["-- Επιλογή --"] + list(art_options.keys()))
+                    
+                    if sel_art_opt != "-- Επιλογή --":
+                        art = art_options[sel_art_opt]
+                        edit_cat = st.text_input("Κατηγορία", value=art['Category'])
+                        edit_title = st.text_input("Τίτλος", value=art['Title'])
+                        edit_content = st.text_area("Περιεχόμενο (Markdown)", value=art['Content'], height=300)
+                        edit_active = st.checkbox("Ενεργό", value=art['IsActive'])
+                        
+                        c_up, c_del = st.columns(2)
+                        with c_up:
+                            if st.button("💾 Ενημέρωση Άρθρου", type="primary", use_container_width=True):
+                                if update_kb_article(art['ArticleID'], edit_title, edit_cat, edit_content, edit_active):
+                                    st.toast("✅ Το άρθρο ενημερώθηκε!")
+                                    st.rerun()
+                        with c_del:
+                            if st.button("🗑️ Διαγραφή Άρθρου", type="secondary", use_container_width=True):
+                                if delete_kb_article(art['ArticleID']):
+                                    st.toast("🗑️ Το άρθρο διαγράφηκε!")
+                                    st.rerun()
+    else:
+        show_articles()
 
 def render_profile_content():
     st.subheader("👤 Διαχείριση Προφίλ", divider="blue")
@@ -1929,13 +2238,109 @@ def render_response_times_content():
             else:
                 st.success("Όλα καθαρά! Δεν βρέθηκαν λάθη στις ημερομηνίες.")
 
+def render_etl_manager_content():
+    st.subheader("🚀 Data Warehouse ETL Manager", divider="blue")
+    st.markdown("Διαχειριστικό περιβάλλον για τον συγχρονισμό δεδομένων από Gemini και Jira στο SQL Server.")
+
+    # Δημιουργία Tabs (Καρτέλες) μέσα στο κυρίως Tab του μενού
+    tab_actions, tab_full_sync = st.tabs(["⚡ Μεμονωμένες Ενέργειες", "📦 Μαζικός Συγχρονισμός"])
+
+    with tab_actions:
+        st.write("Συγχρονισμός ανά Οντότητα (Dimensions & Facts)")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            if st.button("🏢 Sync Projects", use_container_width=True):
+                with st.spinner("Συγχρονισμός Projects σε εξέλιξη..."):
+                    run_real_projects_etl()
+                    run_jira_projects_etl()
+                write_system_log(
+                    st.session_state.user_id, 
+                    "ETL_SYNC_PROJECTS", 
+                    "Χειροκίνητος συγχρονισμός Projects (Gemini & Jira)"
+                )
+                st.success("Τα Projects συγχρονίστηκαν επιτυχώς!")
+
+        with col2:
+            if st.button("👥 Sync Users", use_container_width=True):
+                with st.spinner("Συγχρονισμός Users σε εξέλιξη..."):
+                    run_users_etl()
+                    run_jira_users_etl()
+                write_system_log(
+                    st.session_state.user_id, 
+                    "ETL_SYNC_USERS", 
+                    "Χειροκίνητος συγχρονισμός Users (Gemini & Jira)"
+                )
+                st.success("Οι Users συγχρονίστηκαν επιτυχώς!")
+
+        with col3:
+            if st.button("🧩 Sync Components", use_container_width=True):
+                with st.spinner("Συγχρονισμός Components σε εξέλιξη..."):
+                    run_components_etl()
+                    run_jira_components_etl()
+                write_system_log(
+                    st.session_state.user_id, 
+                    "ETL_SYNC_COMPONENTS", 
+                    "Χειροκίνητος συγχρονισμός Components (Gemini & Jira)"
+                )
+                st.success("Τα Components συγχρονίστηκαν επιτυχώς!")
+
+        with col4:
+            if st.button("🎫 Sync Issues", use_container_width=True, type="primary"):
+                with st.spinner("Incremental Sync (Issues, Comments, Worklogs) σε εξέλιξη..."):
+                    run_incremental_issues_and_children_etl()
+                    run_incremental_jira_etl()
+                write_system_log(
+                    st.session_state.user_id, 
+                    "ETL_SYNC_ISSUES", 
+                    "Χειροκίνητος incremental συγχρονισμός Issues & Children"
+                )
+                st.success("Το Incremental Sync ολοκληρώθηκε!")
+
+    with tab_full_sync:
+        st.write("Πλήρης Συγχρονισμός (Full Pipeline)")
+        st.info("Εκτελείται με την ασφαλή σειρά: Projects ➔ Users ➔ Components ➔ Issues")
+        
+        if st.button("🚀 ΕΚΚΙΝΗΣΗ FULL SYNC", type="primary"):
+            start_time = time.time()
+            
+            with st.status("Εκτέλεση Full Sync Pipeline...", expanded=True) as status:
+                st.write("Συγχρονισμός Projects...")
+                run_real_projects_etl()
+                run_jira_projects_etl()
+                
+                st.write("Συγχρονισμός Users...")
+                run_users_etl()
+                run_jira_users_etl()
+                
+                st.write("Συγχρονισμός Components...")
+                run_components_etl()
+                run_jira_components_etl()
+                
+                st.write("Συγχρονισμός Issues...")
+                run_incremental_issues_and_children_etl()
+                run_incremental_jira_etl()
+                
+                status.update(label="Το Full Sync Ολοκληρώθηκε!", state="complete", expanded=False)
+                
+            end_time = time.time()
+            mins, secs = divmod(int(end_time - start_time), 60)
+            
+            write_system_log(
+                st.session_state.user_id, 
+                "ETL_FULL_SYNC", 
+                f"Εκτέλεση Full Sync Pipeline. Ολοκληρώθηκε επιτυχώς σε {mins}λ και {secs}δ."
+            )
+            st.success(f"🎉 Όλα τα δεδομένα συγχρονίστηκαν επιτυχώς σε {mins} λεπτά και {secs} δευτερόλεπτα!")
+
 def render_manual_content():
     st.subheader("📖 Οδηγίες Χρήσης NSS Timesheet Dashboard", divider="blue")
     
     st.write(
         "Καλώς ορίσατε στον οδηγό χρήσης της εφαρμογής **NSS Timesheet Dashboard**. "
         "Εδώ θα βρείτε αναλυτικές οδηγίες για τη χρήση των φίλτρων, των Previews (αποθηκευμένων φίλτρων), "
-        "της αυτόματης σύνδεσης, καθώς και των λειτουργιών διαχείρισης ομάδων."
+        "της αυτόματης σύνδεσης, καθώς και των λειτουργιών διαχείρισης ομάδων και εσωτερικού περιεχομένου."
     )
     
     # expander 1: Filters & Search
@@ -1976,7 +2381,7 @@ def render_manual_content():
     # expander 3: Authentication & Connection Persistence
     with st.expander("🔑 3. Σύνδεση Χρήστη & Cookies"):
         st.markdown("""
-        * **Soft Login**: Παρέχει πρόσβαση στις προηγμένες δυνατότητες (Previews, Προφίλ, Διαχείριση Ομάδων). Η εφαρμογή παραμένει δημόσια για ανάγνωση (read-only) για επισκέπτες που δεν επιθυμούν να συνδεθούν.
+        * **Soft Login**: Παρέχει πρόσβαση στις προηγμένες δυνατότητες (Previews, Προφίλ, Διαχείριση Ομάδων, Knowledge Base). Η εφαρμογή παραμένει δημόσια για ανάγνωση (read-only) για επισκέπτες που δεν επιθυμούν να συνδεθούν.
         * **Να με θυμάσαι (Remember Me)**:
            - Αν επιλέξετε το **"Να με θυμάσαι"** κατά την είσοδο, η εφαρμογή θα αποθηκεύσει ένα ασφαλές ψηφιακά υπογεγραμμένο cookie (`nss_session`) στον browser σας.
            - Την επόμενη φορά που θα ανοίξετε το URL, η εφαρμογή θα σας συνδέσει **αυτόματα** χωρίς να χρειάζεται να πληκτρολογήσετε ξανά κωδικό.
@@ -2010,44 +2415,62 @@ def render_manual_content():
            - Ορίστε Username, Password και Ρόλο (Administrator, Team Leader, Consultant) για να ολοκληρώσετε την εγγραφή.
         """)
 
-    # expander 6: Response Times & KPIs (Admins / Team Leaders)
+    # expander 6: Response Times & KPIs
     with st.expander("⏱️ 6. Χρόνοι Απόκρισης & KPIs (Admins / Team Leaders)"):
         st.markdown("""
         Η καρτέλα **`⏱️ Χρόνοι Απόκρισης`** (ορατή μόνο σε Administrators και Team Leaders) παρέχει εργαλεία ανάλυσης των χρόνων απόκρισης των Epic tickets:
-        1. **Φόρτωση Δεδομένων**:
-           - Πατήστε το κουμπί **`🔄 Φόρτωση Δεδομένων & KPIs από τη Βάση`** για να αντληθούν οι πληροφορίες από τη βάση μετρήσεων.
-        2. **KPI Metrics & Summary**:
-           - Εμφανίζονται οι μέσοι χρόνοι (σε ημέρες) για τις εξής μεταβάσεις:
-             - **Creation → Assigned**: Χρόνος ανάθεσης.
-             - **Creation → First Response**: Χρόνος πρώτης απάντησης (comment) από τη δημιουργία.
-             - **Assigned → First Response**: Χρόνος πρώτης απάντησης μετά την ανάθεση.
-             - **Assigned → Closed**: Χρόνος ολοκλήρωσης από την ανάθεση.
-             - **Creation → Closed**: Συνολικός χρόνος ζωής του ticket.
-        3. **Φίλτρα Αναζήτησης KPIs**:
-           - Μπορείτε να φιλτράρετε τον πίνακα με βάση το Status, το Project, το Sub Category (Υποκατηγορία) και το εύρος ημερομηνιών δημιουργίας.
-        4. **Λήψη σε Excel**:
-           - Πατώντας **`📥 Λήψη σε Excel`** μπορείτε να κάνετε λήψη των φιλτραρισμένων KPIs σε μορφή Excel.
-        5. **Πίνακας Ελέγχου Λαθών**:
-           - Στο κάτω μέρος υπάρχει πίνακας που εντοπίζει τυχόν σφάλματα καταχωρήσεων στο Jira (π.χ. αρνητικούς χρόνους λόγω λανθασμένων ημερομηνιών).
+        1. **Φόρτωση Δεδομένων**: Πατήστε το κουμπί **`🔄 Φόρτωση Δεδομένων & KPIs από τη Βάση`**.
+        2. **KPI Metrics & Summary**: Εμφανίζονται οι μέσοι χρόνοι (σε ημέρες) για τις μεταβάσεις (π.χ. Creation → Assigned, Assigned → Closed κ.λπ.).
+        3. **Φίλτρα Αναζήτησης KPIs**: Μπορείτε να φιλτράρετε τον πίνακα με βάση το Status, το Project, το Sub Category και το εύρος ημερομηνιών δημιουργίας.
+        4. **Λήψη σε Excel**: Πατώντας **`📥 Λήψη σε Excel`** μπορείτε να κάνετε λήψη των φιλτραρισμένων KPIs σε μορφή Excel.
+        5. **Πίνακας Ελέγχου Λαθών**: Στο κάτω μέρος υπάρχει πίνακας που εντοπίζει τυχόν σφάλματα καταχωρήσεων στο Jira (π.χ. αρνητικούς χρόνους).
+        """)
+
+    # NEW: expander 7 - Knowledge Hub (Public)
+    with st.expander("💡 7. Ανακοινώσεις, Pro Tips & Βάση Γνώσης"):
+        st.markdown("""
+        Η εφαρμογή λειτουργεί πλέον και ως κεντρικός κόμβος ενημέρωσης και εκπαίδευσης της ομάδας:
+        * **Άμεση Ενημέρωση**: Στο πάνω μέρος της αρχικής καρτέλας (`Timesheet`) προβάλλονται αυτόματα η πιο πρόσφατη ενεργή ανακοίνωση και το πιο πρόσφατο Pro Tip.
+        * **📢 Ανακοινώσεις & Tips**: Σε αυτή την καρτέλα βρίσκονται συγκεντρωμένες και κατηγοριοποιημένες όλες οι ανακοινώσεις και οι καλές πρακτικές.
+        * **💡 Knowledge Base**: Αποτελεί την εσωτερική βιβλιοθήκη διαδικασιών.
+          - Μπορείτε να φιλτράρετε τα άρθρα ανά κατηγορία (π.χ. *Διαδικασίες Jira*).
+          - Πατώντας **📖 Διάβασμα**, το άρθρο ανοίγει σε ένα άνετο αναδυόμενο παράθυρο (modal) για ευανάγνωστη μελέτη, χωρίς να αλλάζετε σελίδα.
+        """)
+
+    # NEW: expander 8 - Content Management (Admins/TLs)
+    with st.expander("📝 8. Διαχείριση Περιεχομένου (Admins / Team Leaders)"):
+        st.markdown("""
+        Μόνο οι Team Leaders και οι Administrators έχουν τη δυνατότητα προσθήκης, επεξεργασίας και διαγραφής του ενημερωτικού περιεχομένου:
+        1. **Ανακοινώσεις & Pro Tips**: Μέσα στην καρτέλα `📢 Ανακοινώσεις & Tips` εμφανίζεται στους διαχειριστές ένα επιπλέον υπο-μενού **`⚙️ Διαχείριση (CRUD)`**. Από εκεί μπορούν να δημοσιεύουν ή να επεξεργάζονται υπάρχουσες εγγραφές, μορφοποιώντας το κείμενο με Markdown.
+        2. **Άρθρα Knowledge Base**: Αντίστοιχα, στην καρτέλα `💡 Knowledge Base` εμφανίζεται η επιλογή **`⚙️ Διαχείριση Άρθρων`** για τη δημιουργία και κατηγοριοποίηση νέων εσωτερικών εγχειριδίων.
         """)
 
 # --- Render Tab Layout ---
 if st.session_state.logged_in:
-    tab_list = ["📊 Timesheet", "👤 Το Προφίλ μου"]
+    tab_list = ["📊 Timesheet", "💡 Knowledge Base", "📢 Ανακοινώσεις & Tips", "👤 Το Προφίλ μου"]
     if st.session_state.user_role in ["Administrator", "Team Leader"]:
         tab_list.append("👥 Διαχείριση Ομάδων")
         tab_list.append("⏱️ Χρόνοι Απόκρισης")
+
+    if st.session_state.user_role == "Administrator":
+        tab_list.append("🚀 ETL Manager")
     tab_list.append("📖 Οδηγίες Χρήσης")
         
     main_tabs = st.tabs(tab_list)
     
     with main_tabs[0]:
         render_dashboard_content(df, last_updated, start, end, sel_proj, sel_auth, sel_charge, sel_time, sel_partner, sel_lsp, sel_comp, filtered_df)
-        
+
     with main_tabs[1]:
+        render_knowledge_base_content()
+
+    with main_tabs[2]:
+        render_announcements_and_tips()
+        
+    with main_tabs[3]:
         render_profile_content()
         
-    idx = 2
+    idx = 4
     if st.session_state.user_role in ["Administrator", "Team Leader"]:
         with main_tabs[idx]:
             render_management_content()
@@ -2055,11 +2478,16 @@ if st.session_state.logged_in:
         with main_tabs[idx]:
             render_response_times_content()
         idx += 1
+
+    if st.session_state.user_role == "Administrator":
+        with main_tabs[idx]:
+            render_etl_manager_content()
+        idx += 1
         
     with main_tabs[idx]:
         render_manual_content()
 else:
-    tab_list = ["📊 Timesheet", "📖 Οδηγίες Χρήσης"]
+    tab_list = ["📊 Timesheet", "💡 Knowledge Base", "📖 Οδηγίες Χρήσης"]
     main_tabs = st.tabs(tab_list)
     
     with main_tabs[0]:

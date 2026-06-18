@@ -78,3 +78,27 @@ CREATE TABLE WorkLogs (
 CREATE TABLE Sync_Metadata (
     LastSyncDateTime DATETIME
 );
+
+-- 9. Ενιαίος πίνακας για Ανακοινώσεις και Pro Tips
+CREATE TABLE ContentHub (
+    ContentID INT IDENTITY(1,1) PRIMARY KEY,
+    Title NVARCHAR(255) NOT NULL,
+    Body NVARCHAR(MAX) NOT NULL,          -- Markdown κείμενο
+    ContentType NVARCHAR(50) NOT NULL,   -- 'Announcement' ή 'ProTip'
+    IsActive BIT NOT NULL DEFAULT 1,
+    UserID INT NOT NULL,                  -- Ο δημιουργός (Admin/Team Leader)
+    CreatedAt DATETIME DEFAULT GETDATE(),
+    CONSTRAINT FK_ContentHub_Users FOREIGN KEY (UserID) REFERENCES Users(UserID)
+);
+
+-- 10. Πίνακας για τη Βάση Γνώσης (Εσωτερικές Διαδικασίες)
+CREATE TABLE KBArticles (
+    ArticleID INT IDENTITY(1,1) PRIMARY KEY,
+    Title NVARCHAR(255) NOT NULL,
+    Category NVARCHAR(100) NOT NULL,     -- π.χ. Διαδικασίες Jira, Onboarding, Υποστήριξη
+    Content NVARCHAR(MAX) NOT NULL,      -- Markdown κείμενο
+    IsActive BIT NOT NULL DEFAULT 1,
+    UserID INT NOT NULL,
+    CreatedAt DATETIME DEFAULT GETDATE(),
+    CONSTRAINT FK_KBArticles_Users FOREIGN KEY (UserID) REFERENCES Users(UserID)
+);
