@@ -18,7 +18,7 @@ from modules.test_users_etl import run_users_etl, run_jira_users_etl
 from modules.test_components_etl import run_components_etl, run_jira_components_etl
 from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl
 
-APP_VERSION = "26.5.0 (2026-06-19)"
+APP_VERSION = "26.5.1 (2026-06-19)"
 
 # --- 1. Ρυθμίσεις Σελίδας ---
 st.set_page_config(layout="wide", page_title="NSS Support Hub", page_icon="📊")
@@ -964,7 +964,11 @@ def rt_load_first_response():
     query = """
     SELECT 
         IssueID,
-        MIN(Created) AS FirstResponseDate
+        -- Πρώτη απάντηση από τον External Account
+        MIN(CASE WHEN Fullname = 'ExternalCommunicationAccount' THEN Created ELSE NULL END) AS FirstExternalResponseDate,
+        
+        -- Πρώτη απάντηση από οποιονδήποτε άλλον
+        MIN(CASE WHEN Fullname <> 'ExternalCommunicationAccount' THEN Created ELSE NULL END) AS FirstInternalResponseDate
     FROM dbo.GComments
     WHERE SourceApp = 'Jira'
     GROUP BY IssueID
@@ -2230,7 +2234,8 @@ def render_response_times_content():
                 # Convert Dates
                 df_issues["CreationDate"] = pd.to_datetime(df_issues["CreationDate"])
                 df_issues["ClosedDate"] = pd.to_datetime(df_issues["ClosedDate"])
-                df_comments["FirstResponseDate"] = pd.to_datetime(df_comments["FirstResponseDate"])
+                df_comments["FirstInternalResponseDate"] = pd.to_datetime(df_comments["FirstInternalResponseDate"])
+                df_comments["FirstExternalResponseDate"] = pd.to_datetime(df_comments["FirstExternalResponseDate"])
                 df_assigned["FirstAssignedDate"] = pd.to_datetime(df_assigned["FirstAssignedDate"])
 
                 # Merge All
@@ -2250,16 +2255,9 @@ def render_response_times_content():
                 rt_df["AssigneeName"] = rt_df["AssigneeName"].fillna("Unassigned").astype(str).str.strip()
 
                 # KPI Calculation
+                # (Old stats kept computed in DataFrame so we don't lose them)
                 rt_df["Creation->Assigned"] = (
                     rt_df["FirstAssignedDate"] - rt_df["CreationDate"]
-                ).dt.total_seconds() / 86400
-
-                rt_df["Creation->FirstResponse"] = (
-                    rt_df["FirstResponseDate"] - rt_df["CreationDate"]
-                ).dt.total_seconds() / 86400
-
-                rt_df["Assigned->FirstResponse"] = (
-                    rt_df["FirstResponseDate"] - rt_df["FirstAssignedDate"]
                 ).dt.total_seconds() / 86400
 
                 rt_df["Assigned->Closed"] = (
@@ -2268,6 +2266,38 @@ def render_response_times_content():
 
                 rt_df["Creation->Closed"] = (
                     rt_df["ClosedDate"] - rt_df["CreationDate"]
+                ).dt.total_seconds() / 86400
+
+                # Dynamic overall FirstResponseDate (backward compatibility)
+                rt_df["FirstResponseDate"] = rt_df[["FirstInternalResponseDate", "FirstExternalResponseDate"]].min(axis=1)
+                
+                rt_df["Creation->FirstResponse"] = (
+                    rt_df["FirstResponseDate"] - rt_df["CreationDate"]
+                ).dt.total_seconds() / 86400
+
+                rt_df["Assigned->FirstResponse"] = (
+                    rt_df["FirstResponseDate"] - rt_df["FirstAssignedDate"]
+                ).dt.total_seconds() / 86400
+
+                # New split stats (Colleague's additions)
+                rt_df["Creation->FirstInternalResponse"] = (
+                    rt_df["FirstInternalResponseDate"] - rt_df["CreationDate"]
+                ).dt.total_seconds() / 86400
+
+                rt_df["Creation->FirstExternalResponse"] = (
+                    rt_df["FirstExternalResponseDate"] - rt_df["CreationDate"]
+                ).dt.total_seconds() / 86400
+
+                rt_df["Assigned->FirstInternalResponse"] = (
+                    rt_df["FirstInternalResponseDate"] - rt_df["FirstAssignedDate"]
+                ).dt.total_seconds() / 86400
+
+                rt_df["FirstInternalResponse->Closed"] = (
+                    rt_df["ClosedDate"] - rt_df["FirstInternalResponseDate"]
+                ).dt.total_seconds() / 86400
+
+                rt_df["FirstExternalResponse->Closed"] = (
+                    rt_df["ClosedDate"] - rt_df["FirstExternalResponseDate"]
                 ).dt.total_seconds() / 86400
 
                 st.session_state.rt_df = rt_df
@@ -2452,28 +2482,28 @@ def render_response_times_content():
 
         # 1. Filters Grid
         with st.expander("🔍 Φίλτρα Αναζήτησης KPIs", expanded=False):
-            # Clear button row
-            col_btn_space, col_reset = st.columns([3, 1])
-            with col_reset:
-                if st.button("🔄 Καθαρισμός Φίλτρων KPIs", type="secondary", use_container_width=True, key="rt_clear_filters_btn"):
-                    rt_filter_keys = [
-                        "rt_filter_project",
-                        "rt_filter_status",
-                        "rt_filter_subcategory",
-                        "rt_filter_date",
-                        "rt_filter_assignee",
-                        "rt_filter_components",
-                        "rt_filter_partners",
-                        "rt_filter_customers",
-                        "rt_active_preset_name",
-                        "rt_active_preset_json",
-                        "rt_group_key"
-                    ]
-                    for k in rt_filter_keys:
-                        if k in st.session_state:
-                            del st.session_state[k]
-                    st.toast("🔄 Τα φίλτρα KPIs καθαρίστηκαν!")
-                    st.rerun()
+            # Clear button row (Commented out per user request)
+            # col_btn_space, col_reset = st.columns([3, 1])
+            # with col_reset:
+            #     if st.button("🔄 Καθαρισμός Φίλτρων KPIs", type="secondary", use_container_width=True, key="rt_clear_filters_btn"):
+            #         rt_filter_keys = [
+            #             "rt_filter_project",
+            #             "rt_filter_status",
+            #             "rt_filter_subcategory",
+            #             "rt_filter_date",
+            #             "rt_filter_assignee",
+            #             "rt_filter_components",
+            #             "rt_filter_partners",
+            #             "rt_filter_customers",
+            #             "rt_active_preset_name",
+            #             "rt_active_preset_json",
+            #             "rt_group_key"
+            #         ]
+            #         for k in rt_filter_keys:
+            #             if k in st.session_state:
+            #                 del st.session_state[k]
+            #         st.toast("🔄 Τα φίλτρα KPIs καθαρίστηκαν!")
+            #         st.rerun()
 
             # Row 1 (4 columns)
             fcol1, fcol2, fcol3, fcol4 = st.columns(4)
@@ -2551,11 +2581,17 @@ def render_response_times_content():
             col1, col2, col3, col4, col5, col6 = st.columns(6)
 
             col1.metric("Total Tickets", len(filtered_rt_df))
-            col2.metric("Creation → Assigned (days)", rt_safe_mean(filtered_rt_df["Creation->Assigned"]))
-            col3.metric("Creation → First Response (days)", rt_safe_mean(filtered_rt_df["Creation->FirstResponse"]))
-            col4.metric("Assigned → First Response (days)", rt_safe_mean(filtered_rt_df["Assigned->FirstResponse"]))
-            col5.metric("Assigned → Closed (days)", rt_safe_mean(filtered_rt_df["Assigned->Closed"]))
-            col6.metric("Creation → Closed (days)", rt_safe_mean(filtered_rt_df["Creation->Closed"]))
+            col2.metric("Creation->FirstInternalResponse", rt_safe_mean(filtered_rt_df["Creation->FirstInternalResponse"]))
+            col3.metric("Creation->FirstExternalResponse", rt_safe_mean(filtered_rt_df["Creation->FirstExternalResponse"]))
+            col4.metric("Internal Resp → Closed", rt_safe_mean(filtered_rt_df["FirstInternalResponse->Closed"]))
+            col5.metric("External Resp → Closed", rt_safe_mean(filtered_rt_df["FirstExternalResponse->Closed"]))
+            col6.metric("Creation → Closed", rt_safe_mean(filtered_rt_df["Creation->Closed"]))
+
+            # Old metrics kept in comments as requested:
+            # col2.metric("Creation → Assigned (days)", rt_safe_mean(filtered_rt_df["Creation->Assigned"]))
+            # col3.metric("Creation → First Response (days)", rt_safe_mean(filtered_rt_df["Creation->FirstResponse"]))
+            # col4.metric("Assigned → First Response (days)", rt_safe_mean(filtered_rt_df["Assigned->FirstResponse"]))
+            # col5.metric("Assigned → Closed (days)", rt_safe_mean(filtered_rt_df["Assigned->Closed"]))
 
             st.markdown("---")
 
@@ -2567,10 +2603,14 @@ def render_response_times_content():
                 # Aggregation mapping
                 agg_dict = {
                     "IssueKey": "count",
-                    "Creation->Assigned": "mean",
-                    "Creation->FirstResponse": "mean",
-                    "Assigned->FirstResponse": "mean",
-                    "Assigned->Closed": "mean",
+                    # "Creation->Assigned": "mean",
+                    # "Creation->FirstResponse": "mean",
+                    # "Assigned->FirstResponse": "mean",
+                    # "Assigned->Closed": "mean",
+                    "Creation->FirstInternalResponse": "mean",
+                    "Creation->FirstExternalResponse": "mean",
+                    "FirstInternalResponse->Closed": "mean",
+                    "FirstExternalResponse->Closed": "mean",
                     "Creation->Closed": "mean"
                 }
                 # Group by and aggregate
@@ -2578,10 +2618,14 @@ def render_response_times_content():
                 # Rename columns
                 grouped_df = grouped_df.rename(columns={
                     "IssueKey": "Total Tickets",
-                    "Creation->Assigned": "Creation → Assigned (Mean Days)",
-                    "Creation->FirstResponse": "Creation → First Response (Mean Days)",
-                    "Assigned->FirstResponse": "Assigned → First Response (Mean Days)",
-                    "Assigned->Closed": "Assigned → Closed (Mean Days)",
+                    # "Creation->Assigned": "Creation → Assigned (Mean Days)",
+                    # "Creation->FirstResponse": "Creation → First Response (Mean Days)",
+                    # "Assigned->FirstResponse": "Assigned → First Response (Mean Days)",
+                    # "Assigned->Closed": "Assigned → Closed (Mean Days)",
+                    "Creation->FirstInternalResponse": "Creation->FirstInternalResponse (Mean Days)",
+                    "Creation->FirstExternalResponse": "Creation->FirstExternalResponse (Mean Days)",
+                    "FirstInternalResponse->Closed": "Internal Resp → Closed (Mean Days)",
+                    "FirstExternalResponse->Closed": "External Resp → Closed (Mean Days)",
                     "Creation->Closed": "Creation → Closed (Mean Days)"
                 })
                 
@@ -2592,10 +2636,14 @@ def render_response_times_content():
                     height=400,
                     column_config={
                         "Total Tickets": st.column_config.NumberColumn("Total Tickets", format="%d"),
-                        "Creation → Assigned (Mean Days)": st.column_config.NumberColumn("Creation → Assigned (Avg Days)", format="%.2f"),
-                        "Creation → First Response (Mean Days)": st.column_config.NumberColumn("Creation → First Response (Avg Days)", format="%.2f"),
-                        "Assigned → First Response (Mean Days)": st.column_config.NumberColumn("Assigned → First Response (Avg Days)", format="%.2f"),
-                        "Assigned → Closed (Mean Days)": st.column_config.NumberColumn("Assigned → Closed (Avg Days)", format="%.2f"),
+                        # "Creation → Assigned (Mean Days)": st.column_config.NumberColumn("Creation → Assigned (Avg Days)", format="%.2f"),
+                        # "Creation → First Response (Mean Days)": st.column_config.NumberColumn("Creation → First Response (Avg Days)", format="%.2f"),
+                        # "Assigned → First Response (Mean Days)": st.column_config.NumberColumn("Assigned → First Response (Avg Days)", format="%.2f"),
+                        # "Assigned → Closed (Mean Days)": st.column_config.NumberColumn("Assigned → Closed (Avg Days)", format="%.2f"),
+                        "Creation->FirstInternalResponse (Mean Days)": st.column_config.NumberColumn("Creation->FirstInternalResponse (Avg Days)", format="%.2f"),
+                        "Creation->FirstExternalResponse (Mean Days)": st.column_config.NumberColumn("Creation->FirstExternalResponse (Avg Days)", format="%.2f"),
+                        "Internal Resp → Closed (Mean Days)": st.column_config.NumberColumn("Internal Resp → Closed (Avg Days)", format="%.2f"),
+                        "External Resp → Closed (Mean Days)": st.column_config.NumberColumn("External Resp → Closed (Avg Days)", format="%.2f"),
                         "Creation → Closed (Mean Days)": st.column_config.NumberColumn("Creation → Closed (Avg Days)", format="%.2f"),
                     }
                 )
@@ -2615,9 +2663,20 @@ def render_response_times_content():
                 column_order = [
                     "ProjectId", "IssueKey", "Project", "Type", "JiraLink", "AssigneeName", "Components", 
                     "PartnerName", "CustomerName", "Status", "SubCategory", "CreationDate", 
-                    "FirstAssignedDate", "FirstResponseDate", "ClosedDate",
-                    "Creation->Assigned", "Creation->FirstResponse", 
-                    "Assigned->FirstResponse", "Assigned->Closed", "Creation->Closed"
+                    "FirstAssignedDate", 
+                    # "FirstResponseDate",
+                    "FirstInternalResponseDate",
+                    "FirstExternalResponseDate",
+                    "ClosedDate",
+                    # "Creation->Assigned",
+                    # "Creation->FirstResponse",
+                    # "Assigned->FirstResponse",
+                    # "Assigned->Closed",
+                    "Creation->FirstInternalResponse",
+                    "Creation->FirstExternalResponse",
+                    "FirstInternalResponse->Closed",
+                    "FirstExternalResponse->Closed",
+                    "Creation->Closed"
                 ]
                 existing_cols = [c for c in column_order if c in filtered_rt_df.columns]
                 display_df = filtered_rt_df[existing_cols]
@@ -2641,12 +2700,18 @@ def render_response_times_content():
                         "SubCategory": st.column_config.TextColumn("Sub Category", width=180),
                         "CreationDate": st.column_config.DatetimeColumn("Creation Date", width=160, format="DD/MM/YYYY HH:mm"),
                         "FirstAssignedDate": st.column_config.DatetimeColumn("First Assigned Date", width=160, format="DD/MM/YYYY HH:mm"),
-                        "FirstResponseDate": st.column_config.DatetimeColumn("First Response Date", width=160, format="DD/MM/YYYY HH:mm"),
+                        # "FirstResponseDate": st.column_config.DatetimeColumn("First Response Date", width=160, format="DD/MM/YYYY HH:mm"),
+                        "FirstInternalResponseDate": st.column_config.DatetimeColumn("First Internal Response", width=160, format="DD/MM/YYYY HH:mm"),
+                        "FirstExternalResponseDate": st.column_config.DatetimeColumn("First External Response", width=160, format="DD/MM/YYYY HH:mm"),
                         "ClosedDate": st.column_config.DatetimeColumn("Closed Date", width=160, format="DD/MM/YYYY HH:mm"),
-                        "Creation->Assigned": st.column_config.NumberColumn("Creation → Assigned (Days)", width=240, format="%.2f"),
-                        "Creation->FirstResponse": st.column_config.NumberColumn("Creation → First Response (Days)", width=240, format="%.2f"),
-                        "Assigned->FirstResponse": st.column_config.NumberColumn("Assigned → First Response (Days)", width=240, format="%.2f"),
-                        "Assigned->Closed": st.column_config.NumberColumn("Assigned → Closed (Days)", width=240, format="%.2f"),
+                        # "Creation->Assigned": st.column_config.NumberColumn("Creation → Assigned (Days)", width=240, format="%.2f"),
+                        # "Creation->FirstResponse": st.column_config.NumberColumn("Creation → First Response (Days)", width=240, format="%.2f"),
+                        # "Assigned->FirstResponse": st.column_config.NumberColumn("Assigned → First Response (Days)", width=240, format="%.2f"),
+                        # "Assigned->Closed": st.column_config.NumberColumn("Assigned → Closed (Days)", width=240, format="%.2f"),
+                        "Creation->FirstInternalResponse": st.column_config.NumberColumn("Creation->FirstInternalResponse (Days)", width=220, format="%.2f"),
+                        "Creation->FirstExternalResponse": st.column_config.NumberColumn("Creation->FirstExternalResponse (Days)", width=220, format="%.2f"),
+                        "FirstInternalResponse->Closed": st.column_config.NumberColumn("Internal Resp → Closed (Days)", width=220, format="%.2f"),
+                        "FirstExternalResponse->Closed": st.column_config.NumberColumn("External Resp → Closed (Days)", width=220, format="%.2f"),
                         "Creation->Closed": st.column_config.NumberColumn("Creation → Closed (Days)", width=220, format="%.2f"),
                     }
                 )
@@ -2667,11 +2732,12 @@ def render_response_times_content():
         # 4. Data Errors Expander
         errors_df = rt_df[
             (rt_df["Creation->Assigned"] < 0) |
-            (rt_df["Creation->FirstResponse"] < 0) |
-            (rt_df["Assigned->FirstResponse"] < 0) |
-            (rt_df["Assigned->Closed"] < 0) |
+            (rt_df["Creation->FirstInternalResponse"] < 0) |
+            (rt_df["Creation->FirstExternalResponse"] < 0) |
+            (rt_df["FirstInternalResponse->Closed"] < 0) |
+            (rt_df["FirstExternalResponse->Closed"] < 0) |
             (rt_df["Creation->Closed"] < 0)
-        ][["IssueKey", "JiraLink", "Status", "CreationDate", "FirstAssignedDate", "FirstResponseDate", "ClosedDate"]].copy()
+        ][["IssueKey", "JiraLink", "Status", "CreationDate", "FirstAssignedDate", "FirstInternalResponseDate", "FirstExternalResponseDate", "ClosedDate"]].copy()
 
         with st.expander("⚠️ Πίνακας Ελέγχου Δεδομένων (Λάθη Χρηστών)", expanded=False):
             st.warning(f"Βρέθηκαν {len(errors_df)} tickets με αρνητικούς χρόνους λόγω λάθος καταχώρησης ημερομηνιών στο Jira.")
@@ -2685,7 +2751,8 @@ def render_response_times_content():
                         "Status": st.column_config.TextColumn("Status", width=110),
                         "CreationDate": st.column_config.DatetimeColumn("Creation Date", width=160, format="DD/MM/YYYY HH:mm"),
                         "FirstAssignedDate": st.column_config.DatetimeColumn("First Assigned Date", width=160, format="DD/MM/YYYY HH:mm"),
-                        "FirstResponseDate": st.column_config.DatetimeColumn("First Response Date", width=160, format="DD/MM/YYYY HH:mm"),
+                        "FirstInternalResponseDate": st.column_config.DatetimeColumn("First Internal Response", width=160, format="DD/MM/YYYY HH:mm"),
+                        "FirstExternalResponseDate": st.column_config.DatetimeColumn("First External Response", width=160, format="DD/MM/YYYY HH:mm"),
                         "ClosedDate": st.column_config.DatetimeColumn("Closed Date", width=160, format="DD/MM/YYYY HH:mm")
                     }
                 )
@@ -2934,4 +3001,17 @@ st.session_state["widget_backup"] = {
     "dates_key": st.session_state.get("dates_key"),
     "group_key": st.session_state.get("group_key"),
     "group_filter_selectbox_key": st.session_state.get("group_filter_selectbox_key"),
+    
+    # Response Times page keys backup
+    "rt_filter_project": st.session_state.get("rt_filter_project"),
+    "rt_filter_status": st.session_state.get("rt_filter_status"),
+    "rt_filter_subcategory": st.session_state.get("rt_filter_subcategory"),
+    "rt_filter_date": st.session_state.get("rt_filter_date"),
+    "rt_filter_assignee": st.session_state.get("rt_filter_assignee"),
+    "rt_filter_components": st.session_state.get("rt_filter_components"),
+    "rt_filter_partners": st.session_state.get("rt_filter_partners"),
+    "rt_filter_customers": st.session_state.get("rt_filter_customers"),
+    "rt_active_preset_name": st.session_state.get("rt_active_preset_name"),
+    "rt_active_preset_json": st.session_state.get("rt_active_preset_json"),
+    "rt_group_key": st.session_state.get("rt_group_key"),
 }
