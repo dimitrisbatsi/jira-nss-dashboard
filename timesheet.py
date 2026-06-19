@@ -18,7 +18,7 @@ from modules.test_users_etl import run_users_etl, run_jira_users_etl
 from modules.test_components_etl import run_components_etl, run_jira_components_etl
 from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl
 
-APP_VERSION = "26.4.0 (2026-06-18)"
+APP_VERSION = "26.5.0 (2026-06-19)"
 
 # --- 1. Ρυθμίσεις Σελίδας ---
 st.set_page_config(layout="wide", page_title="NSS Support Hub", page_icon="📊")
@@ -61,7 +61,12 @@ st.markdown("""
         font-size: 0.9rem !important;
     }
     
-    /* 4. Μικρότερο κενό ανάμεσα στα elements του Sidebar */
+    /* 4. Μικρότερο κενό ανάμεσα στα elements του Sidebar και ορισμός width */
+    [data-testid="stSidebar"] {
+        min-width: 260px !important;
+        max-width: 260px !important;
+        width: 260px !important;
+    }
     [data-testid="stSidebar"] .st-emotion-cache-16txtl3 {
         gap: 0.5rem !important;
     }
@@ -82,6 +87,87 @@ st.markdown("""
     [data-testid="stSidebar"] .stDateInput label {
         font-size: 0.8rem !important;
         font-weight: 500 !important;
+    }
+
+    /* 5. Navigation Menu Section Headers */
+    .menu-section-header {
+        font-size: 0.75rem !important;
+        font-weight: 700 !important;
+        color: #64748b !important; /* slate-500 */
+        text-transform: uppercase !important;
+        letter-spacing: 0.05em !important;
+        margin-top: 1.0rem !important;
+        margin-bottom: 0.3rem !important;
+        padding-left: 0.4rem !important;
+        border-bottom: 1px solid #e2e8f0 !important;
+        padding-bottom: 2px !important;
+    }
+    
+    /* 6. Premium Sidebar Navigation Buttons */
+    div[data-testid="stSidebar"] div[data-testid="stButton"] > button {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: flex-start !important;
+        text-align: left !important;
+        width: 100% !important;
+        padding: 8px 12px !important;
+        border-radius: 6px !important;
+        font-size: 0.85rem !important;
+        font-weight: 500 !important;
+        transition: all 0.2s ease !important;
+        margin-bottom: 2px !important;
+        min-height: 2.2rem !important;
+    }
+
+    /* Inactive (Secondary) Navigation Button */
+    div[data-testid="stSidebar"] div[data-testid="stButton"] > button[data-testid="baseButton-secondary"] {
+        background-color: transparent !important;
+        color: #475569 !important; /* slate-600 */
+        border: 1px solid transparent !important;
+    }
+
+    /* Active (Primary) Navigation Button */
+    div[data-testid="stSidebar"] div[data-testid="stButton"] > button[data-testid="baseButton-primary"] {
+        background-color: #2563eb !important; /* Premium blue */
+        color: #ffffff !important;
+        font-weight: 600 !important;
+        border: 1px solid #2563eb !important;
+        box-shadow: 0 4px 6px -1px rgba(37, 99, 235, 0.15) !important;
+    }
+
+    /* Hover for Inactive (Secondary) Navigation Button */
+    div[data-testid="stSidebar"] div[data-testid="stButton"] > button[data-testid="baseButton-secondary"]:hover {
+        background-color: #f1f5f9 !important; /* slate-100 */
+        color: #1e293b !important; /* slate-800 */
+        border-color: #e2e8f0 !important;
+    }
+
+    /* Hover for Active Navigation Button */
+    div[data-testid="stSidebar"] div[data-testid="stButton"] > button[data-testid="baseButton-primary"]:hover {
+        background-color: #1d4ed8 !important;
+        border-color: #1d4ed8 !important;
+        color: #ffffff !important;
+    }
+
+    /* Reset button styles inside expanders (like Login form) to look standard */
+    div[data-testid="stSidebar"] [data-testid="stExpander"] div[data-testid="stButton"] > button {
+        justify-content: center !important;
+        text-align: center !important;
+    }
+
+    /* Style open expander dropdown panel with darker soft grey bg */
+    details[data-testid="stExpander"][open],
+    div[data-testid="stExpander"]:has(details[open]) {
+        background-color: #f1f5f9 !important; /* Soft premium grey */
+        border: 1px solid #cbd5e1 !important;
+        border-radius: 8px !important;
+    }
+
+    /* White background for input fields inside expander panels */
+    div[data-testid="stExpander"] div[data-baseweb="select"] > div,
+    div[data-testid="stExpander"] div[data-baseweb="input"] > div,
+    div[data-testid="stExpander"] div[role="combobox"] {
+        background-color: #ffffff !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -1064,29 +1150,52 @@ else:
             del st.session_state["widget_backup"]
         st.toast("👋 Αποσυνδεθήκατε με επιτυχία.")
 
+# --- Navigation Section in Sidebar ---
+# Determine active selected page
+if "selected_page" not in st.session_state:
+    st.session_state.selected_page = "📊 Timesheet"
+
+selected_page = st.session_state.selected_page
+
+# Validate selection for role permissions
+valid_pages = ["📊 Timesheet", "💡 Knowledge Base", "📢 Ανακοινώσεις & Tips", "📖 Οδηγίες Χρήσης"]
+if st.session_state.logged_in:
+    valid_pages.extend(["👤 Το Προφίλ μου"])
+    if st.session_state.user_role in ["Administrator", "Team Leader"]:
+        valid_pages.extend(["👥 Διαχείριση Ομάδων", "⏱️ Χρόνοι Απόκρισης"])
+    if st.session_state.user_role == "Administrator":
+        valid_pages.append("🚀 ETL Manager")
+
+if selected_page not in valid_pages:
+    selected_page = "📊 Timesheet"
+    st.session_state.selected_page = "📊 Timesheet"
+
+# Helper function to render styled navigation buttons
+def draw_nav_button(label, page_name):
+    is_active = (selected_page == page_name)
+    btn_type = "primary" if is_active else "secondary"
+    if st.sidebar.button(label, key=f"nav_btn_{page_name}", type=btn_type, use_container_width=True):
+        st.session_state.selected_page = page_name
+        st.rerun()
+
+st.sidebar.markdown('<div class="menu-section-header">🧭 Κύριο Μενού</div>', unsafe_allow_html=True)
+draw_nav_button("📊 Timesheet", "📊 Timesheet")
+draw_nav_button("💡 Knowledge Base", "💡 Knowledge Base")
+draw_nav_button("📢 Ανακοινώσεις & Tips", "📢 Ανακοινώσεις & Tips")
+draw_nav_button("📖 Οδηγίες Χρήσης", "📖 Οδηγίες Χρήσης")
+
+if st.session_state.logged_in:
+    draw_nav_button("👤 Το Προφίλ μου", "👤 Το Προφίλ μου")
+
+# Advanced Menu section for Admins / Team Leaders
+if st.session_state.logged_in and st.session_state.user_role in ["Administrator", "Team Leader"]:
+    st.sidebar.markdown('<div class="menu-section-header">⚙️ Advanced Menu</div>', unsafe_allow_html=True)
+    draw_nav_button("👥 Διαχείριση Ομάδων", "👥 Διαχείριση Ομάδων")
+    draw_nav_button("⏱️ Χρόνοι Απόκρισης", "⏱️ Χρόνοι Απόκρισης")
+    if st.session_state.user_role == "Administrator":
+        draw_nav_button("🚀 ETL Manager", "🚀 ETL Manager")
 st.sidebar.write("---")
-st.sidebar.markdown('<h1 class="stHeadingSidebar">🎛️ Φίλτρα Αναζήτησης Timesheet</h1>', unsafe_allow_html=True)
-
-if not st.session_state.logged_in:
-    st.sidebar.info("💡 Συνδεθείτε για να αποθηκεύετε τα φίλτρα σας σε Previews!")
-
-# --- Κουμπί Reset Filters ---
-if st.sidebar.button("🔄 Καθαρισμός Φίλτρων", type="primary", use_container_width=True):
-    # Reset filter keys from session state
-    filter_keys = ['proj_key', 'auth_key', 'charge_key', 'time_key', 'partner_key', 'lsp_key', 'comp_key', 'dates_key', 'group_key', 'filters_init']
-    for k in filter_keys:
-        if k in st.session_state:
-            del st.session_state[k]
-            
-    # Also clear active preset name
-    if "active_preset_name" in st.session_state:
-        del st.session_state["active_preset_name"]
-    if "active_preset_json" in st.session_state:
-        del st.session_state["active_preset_json"]
-    if "widget_backup" in st.session_state:
-        del st.session_state["widget_backup"]
-        
-    st.rerun()
+st.sidebar.caption(f"**App Version:** {APP_VERSION}")
 
 # 1. INITIALIZATION: Θέτουμε τις αρχικές τιμές στα φίλτρα απευθείας στη μνήμη (παρακάμπτοντας το URL)
 if "filters_init" not in st.session_state:
@@ -1160,175 +1269,110 @@ if "filters_init" not in st.session_state:
         st.session_state['partner_key'] = all_partner
         st.session_state['lsp_key'] = all_lsp
         st.session_state['comp_key'] = all_comp
-        st.session_state['dates_key'] = [pd.to_datetime(df['Date']).min(), pd.to_datetime(df['Date']).max()]
+        import calendar
+        today = datetime.now().date()
+        start_of_month = today.replace(day=1)
+        last_day = calendar.monthrange(today.year, today.month)[1]
+        end_of_month = today.replace(day=last_day)
+        st.session_state['dates_key'] = [start_of_month, end_of_month]
         st.session_state['group_key'] = ["Assignee"]
     
     st.session_state["filters_init"] = True
 
-# --- 👥 Ομάδες Χρηστών Filter ---
-groups = load_groups_from_db()
-group_names = ["Όλες οι Ομάδες"] + [g["GroupName"] for g in groups]
+# Global variables for layout fallback
+start = datetime.now().date().strftime('%Y-%m-%d')
+end = start
+filtered_df = df.copy()
 
-def on_group_filter_change():
-    val = st.session_state.group_filter_selectbox_key
-    all_auth = sorted([str(x) for x in df["Assignee"].dropna().unique()])
-    if val and val != "Όλες οι Ομάδες":
-        selected_group = next((g for g in groups if g["GroupName"] == val), None)
-        if selected_group:
-            group_members = load_group_members(selected_group["GroupID"])
-            if group_members:
-                st.session_state["auth_key"] = sorted([m for m in group_members if m in all_auth])
-    else:
-        st.session_state["auth_key"] = all_auth
+# --- 5. Rendering Functions ---
 
-sel_group_name = st.sidebar.selectbox(
-    "👥 Ομάδα Χρηστών", 
-    options=group_names, 
-    index=0, 
-    key="group_filter_selectbox_key",
-    on_change=on_group_filter_change
-)
+def render_dashboard_content(df, last_updated):
+    # --- Top Title & Last Updated ---
+    col_title, col_time = st.columns([3, 1])
+    with col_title:
+        st.title("📊 NSS Support Hub")
+    with col_time:
+        st.write("") 
+        st.write("")
+        st.caption(f"🔄 **Τελευταία Ενημέρωση Δεδομένων:** {last_updated}")
 
-# Limit assignee options if a group is selected
-assignee_options = sorted([str(x) for x in df["Assignee"].dropna().unique()])
-if sel_group_name != "Όλες οι Ομάδες":
-    selected_group_id = next(g["GroupID"] for g in groups if g["GroupName"] == sel_group_name)
-    group_members = load_group_members(selected_group_id)
-    if group_members:
-        assignee_options = sorted([m for m in group_members if m in assignee_options])
-
-# 2. WIDGETS
-date_range = st.sidebar.date_input("📅 Ημερομηνίες", key="dates_key")
-sel_proj = st.sidebar.multiselect("📁 Project", options=sorted([str(x) for x in df["Project"].dropna().unique()]), key="proj_key")
-
-if st.session_state.logged_in:
-    user_name_to_select = st.session_state.display_name or st.session_state.username
-    if st.sidebar.button("👤 Επιλογή: Μόνο Εγώ", type="secondary", use_container_width=True):
-        all_auth = sorted([str(x) for x in df["Assignee"].dropna().unique()])
-        if user_name_to_select in all_auth:
-            st.session_state["auth_key"] = [user_name_to_select]
-
-sel_auth = st.sidebar.multiselect("👤 Assignee", options=assignee_options, key="auth_key")
-sel_charge = st.sidebar.multiselect("💰 Charge Type", options=sorted([str(x) for x in df["Charge Type"].dropna().unique()]), key="charge_key")
-sel_time = st.sidebar.multiselect("⏱️ Time Type", options=sorted([str(x) for x in df["Time Type"].dropna().unique()]), key="time_key")
-
-if "Partner Name" in df.columns:
-    sel_partner = st.sidebar.multiselect("🤝 Partner Name", options=sorted([str(x) for x in df["Partner Name"].dropna().unique()]), key="partner_key")
-else:
-    sel_partner = []
-
-if "LSP Customer Name" in df.columns:
-    sel_lsp = st.sidebar.multiselect("🏢 LSP Customer", options=sorted([str(x) for x in df["LSP Customer Name"].dropna().unique()]), key="lsp_key")
-else:
-    sel_lsp = []
-
-if "Parent Category" in df.columns:
-    sel_comp = st.sidebar.multiselect("🧩 Κατηγορίες (Components)", options=sorted([str(x) for x in df["Parent Category"].dropna().unique()]), key="comp_key")
-else:
-    sel_comp = []
-
-# --- 💾 Saved Previews Section ---
-if st.session_state.logged_in:
-    st.sidebar.write("---")
-    with st.sidebar.expander("💾 Saved Previews (Presets)"):
-        presets = load_user_presets(st.session_state.user_id)
+    # --- Top Banner: Latest Announcement & Pro Tip (Shown directly) ---
+    latest_announcement = load_latest_content("Announcement")
+    latest_protip = load_latest_content("ProTip")
+    
+    if latest_announcement or latest_protip:
+        col_ann, col_tip = st.columns(2)
         
-        def on_preset_change():
-            val = st.session_state.selected_preset_name_widget
-            if val and val != "-- Επιλέξτε Preview --":
-                clean_val = val
-                if " (⭐ Προεπιλογή)" in clean_val:
-                    clean_val = clean_val.replace(" (⭐ Προεπιλογή)", "")
-                selected_preset = next((p for p in presets if p["PresetName"] == clean_val), None)
-                if selected_preset:
-                    import json
-                    try:
-                        filters = json.loads(selected_preset["FiltersJSON"])
-                        # Set new params from preset directly in session state (bypassing URL parameters)
-                        if "proj_key" in filters:
-                            st.session_state["proj_key"] = filters["proj_key"]
-                        if "auth_key" in filters:
-                            st.session_state["auth_key"] = filters["auth_key"]
-                        if "charge_key" in filters:
-                            st.session_state["charge_key"] = filters["charge_key"]
-                        if "time_key" in filters:
-                            st.session_state["time_key"] = filters["time_key"]
-                        if "partner_key" in filters:
-                            st.session_state["partner_key"] = filters["partner_key"]
-                        if "lsp_key" in filters:
-                            st.session_state["lsp_key"] = filters["lsp_key"]
-                        if "comp_key" in filters:
-                            st.session_state["comp_key"] = filters["comp_key"]
-                        if "dates_key" in filters:
-                            st.session_state["dates_key"] = [pd.to_datetime(d).date() for d in filters["dates_key"]]
-                        if "group_key" in filters:
-                            st.session_state["group_key"] = filters["group_key"]
-                            
-                        # Store active preset information in session state
-                        st.session_state.active_preset_name = selected_preset["PresetName"]
-                        st.session_state.active_preset_json = selected_preset["FiltersJSON"]
-                        
-                        st.toast("✅ Το Preview φορτώθηκε επιτυχώς!")
-                    except Exception as e:
-                        st.error(f"Σφάλμα κατά τη φόρτωση του preview: {e}")
-            # Reset selectbox state so it doesn't loop
-            st.session_state.selected_preset_name_widget = "-- Επιλέξτε Preview --"
-
-        preset_names = ["-- Επιλέξτε Preview --"] + [
-            f"{p['PresetName']} (⭐ Προεπιλογή)" if p.get("IsDefault") else p["PresetName"]
-            for p in presets
-        ]
-        selected_preset_name = st.selectbox(
-            "Φόρτωση Preview", 
-            options=preset_names, 
-            key="selected_preset_name_widget",
-            on_change=on_preset_change
-        )
-            
-        st.markdown("---")
-        new_preset_name = st.text_input("Όνομα νέου Preview", placeholder="π.χ. My Support Group")
-        if st.button("Αποθήκευση Τρέχοντος Φίλτρου", type="primary", use_container_width=True):
-            if new_preset_name.strip():
-                filters_dict = {
-                    "proj_key": st.session_state.get("proj_key", []),
-                    "auth_key": st.session_state.get("auth_key", []),
-                    "charge_key": st.session_state.get("charge_key", []),
-                    "time_key": st.session_state.get("time_key", []),
-                    "partner_key": st.session_state.get("partner_key", []),
-                    "lsp_key": st.session_state.get("lsp_key", []),
-                    "comp_key": st.session_state.get("comp_key", []),
-                    "dates_key": [str(d) for d in st.session_state.get("dates_key", [])],
-                    "group_key": st.session_state.get("group_key", ["Assignee"])
-                }
-                import json
-                if save_user_preset(st.session_state.user_id, new_preset_name.strip(), json.dumps(filters_dict)):
-                    st.toast("✅ Το Preview αποθηκεύτηκε!")
-                    st.rerun()
-            else:
-                st.error("Εισάγετε ένα έγκυρο όνομα")
+        with col_ann:
+            if latest_announcement:
+                st.info(f"📢 **Πρόσφατη Ανακοίνωση: {latest_announcement['Title']}**\n\n{latest_announcement['Body']}")
                 
-        # Show sharing panel and active preset status if a preset is active
+        with col_tip:
+            if latest_protip:
+                st.success(f"💡 **Weekly Pro Tip: {latest_protip['Title']}**\n\n{latest_protip['Body']}")
+        st.write("<br>", unsafe_allow_html=True)
+
+    # --- 💾 Saved Previews Section ---
+    if st.session_state.logged_in:
         active_preset_name = st.session_state.get("active_preset_name")
+        expander_title = "💾 Saved Previews (Presets) - Timesheet"
         if active_preset_name:
+            expander_title += f" (Ενεργό: {active_preset_name})"
+            
+        with st.expander(expander_title, expanded=False):
+            presets = load_user_presets(st.session_state.user_id)
+            ts_presets = [p for p in presets if "proj_key" in p["FiltersJSON"]]
+            
+            def on_ts_preset_change():
+                val = st.session_state.ts_preset_select_widget
+                if val and val != "-- Επιλέξτε Preview --":
+                    clean_val = val.replace(" (⭐ Προεπιλογή)", "")
+                    selected_preset = next((p for p in ts_presets if p["PresetName"] == clean_val), None)
+                    if selected_preset:
+                        import json
+                        try:
+                            filters = json.loads(selected_preset["FiltersJSON"])
+                            if "proj_key" in filters:
+                                st.session_state["proj_key"] = filters["proj_key"]
+                            if "auth_key" in filters:
+                                st.session_state["auth_key"] = filters["auth_key"]
+                            if "charge_key" in filters:
+                                st.session_state["charge_key"] = filters["charge_key"]
+                            if "time_key" in filters:
+                                st.session_state["time_key"] = filters["time_key"]
+                            if "partner_key" in filters:
+                                st.session_state["partner_key"] = filters["partner_key"]
+                            if "lsp_key" in filters:
+                                st.session_state["lsp_key"] = filters["lsp_key"]
+                            if "comp_key" in filters:
+                                st.session_state["comp_key"] = filters["comp_key"]
+                            if "dates_key" in filters:
+                                st.session_state["dates_key"] = [pd.to_datetime(d).date() for d in filters["dates_key"]]
+                            if "group_key" in filters:
+                                st.session_state["group_key"] = filters["group_key"]
+                            
+                            st.session_state.active_preset_name = selected_preset["PresetName"]
+                            st.session_state.active_preset_json = selected_preset["FiltersJSON"]
+                            st.toast("✅ Το Preview φορτώθηκε επιτυχώς!")
+                        except Exception as e:
+                            st.error(f"Σφάλμα κατά τη φόρτωση του preview: {e}")
+                st.session_state.ts_preset_select_widget = "-- Επιλέξτε Preview --"
+
+            preset_names = ["-- Επιλέξτε Preview --"] + [
+                f"{p['PresetName']} (⭐ Προεπιλογή)" if p.get("IsDefault") else p["PresetName"]
+                for p in ts_presets
+            ]
+            st.selectbox(
+                "Φόρτωση Preview", 
+                options=preset_names, 
+                key="ts_preset_select_widget",
+                on_change=on_ts_preset_change
+            )
+            
             st.markdown("---")
-            st.markdown(f"📂 **Ενεργό Preview:** `{active_preset_name}`")
-            
-            # Check if it is the default one
-            active_preset = next((p for p in presets if p["PresetName"] == active_preset_name), None)
-            is_default_active = active_preset.get("IsDefault", False) if active_preset else False
-            
-            if is_default_active:
-                st.markdown("⭐ **Προεπιλεγμένο Preview (αυτόματο)**")
-            else:
-                if st.button("⭐ Ορισμός ως Προεπιλογή", type="secondary", use_container_width=True):
-                    if set_preset_as_default(st.session_state.user_id, active_preset_name, "proj_key"):
-                        st.toast("✅ Ορίστηκε ως προεπιλεγμένο preview!")
-                        st.rerun()
-            
-            col_update, col_reload, col_close = st.columns(3)
-            with col_update:
-                if st.button("💾 Ενημέρωση", type="primary", use_container_width=True):
-                    # Build current filters dictionary
+            new_preset_name = st.text_input("Όνομα νέου Preview", placeholder="π.χ. My Support Group", key="ts_new_preset_name")
+            if st.button("Αποθήκευση Τρέχοντος Φίλτρου", type="primary", use_container_width=True, key="ts_save_preset_btn"):
+                if new_preset_name.strip():
                     filters_dict = {
                         "proj_key": st.session_state.get("proj_key", []),
                         "auth_key": st.session_state.get("auth_key", []),
@@ -1341,94 +1385,187 @@ if st.session_state.logged_in:
                         "group_key": st.session_state.get("group_key", ["Assignee"])
                     }
                     import json
-                    new_json = json.dumps(filters_dict)
-                    if update_user_preset(st.session_state.user_id, active_preset_name, new_json):
-                        st.session_state.active_preset_json = new_json
-                        st.toast("✅ Το Preview ενημερώθηκε επιτυχώς!")
-            with col_reload:
-                if st.button("🔄 Επαναφορά", type="secondary", use_container_width=True, help="Επαναφορά στα αρχικά αποθηκευμένα φίλτρα"):
-                    if "active_preset_json" in st.session_state:
-                        apply_preset_filters(st.session_state.active_preset_json)
-                        st.toast("🔄 Τα αρχικά φίλτρα του Preview επαναφέρθηκαν!")
+                    if save_user_preset(st.session_state.user_id, new_preset_name.strip(), json.dumps(filters_dict)):
+                        st.toast("✅ Το Preview αποθηκεύτηκε!")
                         st.rerun()
-            with col_close:
-                if st.button("❌ Κλείσιμο", type="secondary", use_container_width=True):
-                    if "active_preset_name" in st.session_state:
-                        del st.session_state["active_preset_name"]
-                    if "active_preset_json" in st.session_state:
-                        del st.session_state["active_preset_json"]
-                    st.rerun()
-                
-            st.markdown("---")
-            all_users = load_all_active_users()
-            other_users = [u for u in all_users if u["UserID"] != st.session_state.user_id]
-            other_user_names = [u["Username"] for u in other_users]
-            
-            st.markdown("**Κοινοποίηση σε άλλον χρήστη:**")
-            share_with = st.selectbox("Επιλέξτε Χρήστη", options=["-- Επιλογή --"] + other_user_names, key="preset_share_user_select")
-            if st.button("Κοινοποίηση", type="secondary", use_container_width=True):
-                if share_with != "-- Επιλογή --":
-                    target_user = next(u for u in other_users if u["Username"] == share_with)
-                    shared_name = f"{active_preset_name} (Shared by {st.session_state.username})"
-                    if save_user_preset(target_user["UserID"], shared_name, st.session_state.active_preset_json):
-                        st.success(f"Κοινοποιήθηκε στον χρήστη {share_with}!")
-
-st.sidebar.write("")
-st.sidebar.caption(f"**App Version:** {APP_VERSION}")
-
-
-
-# Φιλτράρισμα Δεδομένων
-start = date_range[0].strftime('%Y-%m-%d')
-end = date_range[1].strftime('%Y-%m-%d') if len(date_range) > 1 else start
-
-mask = (df["Date"] >= start) & (df["Date"] <= end) & \
-       df["Project"].isin(sel_proj) & df["Assignee"].isin(sel_auth) & \
-       df["Charge Type"].isin(sel_charge) & df["Time Type"].isin(sel_time)
-
-if "Partner Name" in df.columns:
-    mask = mask & df["Partner Name"].isin(sel_partner)
-if "LSP Customer Name" in df.columns:
-    mask = mask & df["LSP Customer Name"].isin(sel_lsp)
-
-if "Parent Category" in df.columns and sel_comp:
-    pattern = '|'.join([re.escape(c) for c in sel_comp])
-    mask = mask & df["Parent Category"].str.contains(pattern, case=False, na=False)
-
-filtered_df = df[mask]
-
-# --- 5. Rendering Functions ---
-
-def render_dashboard_content(df, last_updated, start, end, sel_proj, sel_auth, sel_charge, sel_time, sel_partner, sel_lsp, sel_comp, filtered_df):
-    col_title, col_time = st.columns([3, 1])
-
-    # --- Top Banner: Latest Announcement & Pro Tip ---
-    latest_announcement = load_latest_content("Announcement")
-    latest_protip = load_latest_content("ProTip")
-    
-    if latest_announcement or latest_protip:
-        col_ann, col_tip = st.columns(2)
-        
-        with col_ann:
-            if latest_announcement:
-                st.info(f"📢 **Πρόσφατη Ανακοίνωση:** {latest_announcement['Title']}")
-                with st.expander("Διαβάστε την ανακοίνωση"):
-                    st.markdown(latest_announcement['Body'])
+                else:
+                    st.error("Εισάγετε ένα έγκυρο όνομα")
                     
-        with col_tip:
-            if latest_protip:
-                st.success(f"💡 **Weekly Pro Tip:** {latest_protip['Title']}")
-                with st.expander("Δείτε το Tip"):
-                    st.markdown(latest_protip['Body'])
-        st.write("<br>", unsafe_allow_html=True)
-    
-    with col_title:
-        st.title("📊 NSS Support Hub")
-        
-    with col_time:
-        st.write("") 
-        st.write("")
-        st.caption(f"🔄 **Τελευταία Ενημέρωση Δεδομένων:** {last_updated}")
+            active_preset_name = st.session_state.get("active_preset_name")
+            if active_preset_name:
+                st.markdown("---")
+                st.markdown(f"📂 **Ενεργό Preview:** `{active_preset_name}`")
+                
+                active_preset = next((p for p in ts_presets if p["PresetName"] == active_preset_name), None)
+                is_default_active = active_preset.get("IsDefault", False) if active_preset else False
+                
+                if is_default_active:
+                    st.markdown("⭐ **Προεπιλεγμένο Preview (αυτόματο)**")
+                else:
+                    if st.button("⭐ Ορισμός ως Προεπιλογή", type="secondary", use_container_width=True, key="ts_set_default_preset_btn"):
+                        if set_preset_as_default(st.session_state.user_id, active_preset_name, "proj_key"):
+                            st.toast("✅ Ορίστηκε ως προεπιλεγμένο preview!")
+                            st.rerun()
+                
+                col_update, col_reload, col_close = st.columns(3)
+                with col_update:
+                    if st.button("💾 Ενημέρωση", type="primary", use_container_width=True, key="ts_update_preset_btn"):
+                        filters_dict = {
+                            "proj_key": st.session_state.get("proj_key", []),
+                            "auth_key": st.session_state.get("auth_key", []),
+                            "charge_key": st.session_state.get("charge_key", []),
+                            "time_key": st.session_state.get("time_key", []),
+                            "partner_key": st.session_state.get("partner_key", []),
+                            "lsp_key": st.session_state.get("lsp_key", []),
+                            "comp_key": st.session_state.get("comp_key", []),
+                            "dates_key": [str(d) for d in st.session_state.get("dates_key", [])],
+                            "group_key": st.session_state.get("group_key", ["Assignee"])
+                        }
+                        import json
+                        new_json = json.dumps(filters_dict)
+                        if update_user_preset(st.session_state.user_id, active_preset_name, new_json):
+                            st.session_state.active_preset_json = new_json
+                            st.toast("✅ Το Preview ενημερώθηκε επιτυχώς!")
+                with col_reload:
+                    if st.button("🔄 Επαναφορά", type="secondary", use_container_width=True, key="ts_reload_preset_btn"):
+                        if "active_preset_json" in st.session_state:
+                            apply_preset_filters(st.session_state.active_preset_json)
+                            st.toast("🔄 Τα αρχικά φίλτρα του Preview επαναφέρθηκαν!")
+                            st.rerun()
+                with col_close:
+                    if st.button("❌ Κλείσιμο", type="secondary", use_container_width=True, key="ts_close_preset_btn"):
+                        if "active_preset_name" in st.session_state:
+                            del st.session_state["active_preset_name"]
+                        if "active_preset_json" in st.session_state:
+                            del st.session_state["active_preset_json"]
+                        st.rerun()
+                    
+                st.markdown("---")
+                all_users = load_all_active_users()
+                other_users = [u for u in all_users if u["UserID"] != st.session_state.user_id]
+                other_user_names = [u["Username"] for u in other_users]
+                
+                st.markdown("**Κοινοποίηση σε άλλον χρήστη:**")
+                share_with = st.selectbox("Επιλέξτε Χρήστη", options=["-- Επιλογή --"] + other_user_names, key="ts_preset_share_user_select")
+                if st.button("Κοινοποίηση", type="secondary", use_container_width=True, key="ts_preset_share_btn"):
+                    if share_with != "-- Επιλογή --":
+                        target_user = next(u for u in other_users if u["Username"] == share_with)
+                        shared_name = f"{active_preset_name} (Shared by {st.session_state.username})"
+                        if save_user_preset(target_user["UserID"], shared_name, st.session_state.active_preset_json):
+                            st.success(f"Κοινοποιήθηκε στον χρήστη {share_with}!")
+
+    # --- 🔍 Φίλτρα Αναζήτησης Timesheet Grid ---
+    with st.expander("🔍 Φίλτρα Αναζήτησης Timesheet", expanded=False):
+        # Row 1 (4 columns)
+        tcol1, tcol2, tcol3, tcol4 = st.columns(4)
+        # Row 2 (4 columns)
+        tcol5, tcol6, tcol7, tcol8 = st.columns(4)
+        # Row 3 (2 columns)
+        tcol9, tcol10 = st.columns([3, 1])
+
+        with tcol1:
+            date_range = st.date_input("📅 Ημερομηνίες", key="dates_key")
+
+        with tcol2:
+            groups = load_groups_from_db()
+            group_names = ["Όλες οι Ομάδες"] + [g["GroupName"] for g in groups]
+            
+            def on_group_filter_change():
+                val = st.session_state.group_filter_selectbox_key
+                all_auth = sorted([str(x) for x in df["Assignee"].dropna().unique()])
+                if val and val != "Όλες οι Ομάδες":
+                    selected_group = next((g for g in groups if g["GroupName"] == val), None)
+                    if selected_group:
+                        group_members = load_group_members(selected_group["GroupID"])
+                        if group_members:
+                            st.session_state["auth_key"] = sorted([m for m in group_members if m in all_auth])
+                else:
+                    st.session_state["auth_key"] = all_auth
+
+            sel_group_name = st.selectbox(
+                "👥 Ομάδα Χρηστών", 
+                options=group_names, 
+                key="group_filter_selectbox_key",
+                on_change=on_group_filter_change
+            )
+
+        with tcol3:
+            sel_proj = st.multiselect("📁 Project", options=sorted([str(x) for x in df["Project"].dropna().unique()]), key="proj_key")
+
+        with tcol4:
+            assignee_options = sorted([str(x) for x in df["Assignee"].dropna().unique()])
+            if sel_group_name != "Όλες οι Ομάδες":
+                selected_group_id = next(g["GroupID"] for g in groups if g["GroupName"] == sel_group_name)
+                group_members = load_group_members(selected_group_id)
+                if group_members:
+                    assignee_options = sorted([m for m in group_members if m in assignee_options])
+
+            sel_auth = st.multiselect("👤 Assignee", options=assignee_options, key="auth_key")
+            
+            if st.session_state.logged_in:
+                user_name_to_select = st.session_state.display_name or st.session_state.username
+                all_auth = sorted([str(x) for x in df["Assignee"].dropna().unique()])
+                if user_name_to_select in all_auth:
+                    if st.button("👤 Μόνο Εγώ", type="secondary", use_container_width=True, key="ts_only_me_btn"):
+                        st.session_state["auth_key"] = [user_name_to_select]
+                        st.rerun()
+
+        with tcol5:
+            sel_charge = st.multiselect("💰 Charge Type", options=sorted([str(x) for x in df["Charge Type"].dropna().unique()]), key="charge_key")
+
+        with tcol6:
+            sel_time = st.multiselect("⏱️ Time Type", options=sorted([str(x) for x in df["Time Type"].dropna().unique()]), key="time_key")
+
+        with tcol7:
+            if "Partner Name" in df.columns:
+                sel_partner = st.multiselect("🤝 Partner Name", options=sorted([str(x) for x in df["Partner Name"].dropna().unique()]), key="partner_key")
+            else:
+                sel_partner = []
+
+        with tcol8:
+            if "LSP Customer Name" in df.columns:
+                sel_lsp = st.multiselect("🏢 LSP Customer", options=sorted([str(x) for x in df["LSP Customer Name"].dropna().unique()]), key="lsp_key")
+            else:
+                sel_lsp = []
+
+        with tcol9:
+            if "Parent Category" in df.columns:
+                sel_comp = st.multiselect("🧩 Κατηγορίες (Components)", options=sorted([str(x) for x in df["Parent Category"].dropna().unique()]), key="comp_key")
+            else:
+                sel_comp = []
+
+        with tcol10:
+            st.write("<div style='height: 24px;'></div>", unsafe_allow_html=True)
+            if st.button("🔄 Καθαρισμός Φίλτρων", type="primary", use_container_width=True, key="ts_clear_filters_btn"):
+                filter_keys = ['proj_key', 'auth_key', 'charge_key', 'time_key', 'partner_key', 'lsp_key', 'comp_key', 'dates_key', 'group_key', 'filters_init', 'group_filter_selectbox_key']
+                for k in filter_keys:
+                    if k in st.session_state:
+                        del st.session_state[k]
+                if "active_preset_name" in st.session_state:
+                    del st.session_state["active_preset_name"]
+                if "active_preset_json" in st.session_state:
+                    del st.session_state["active_preset_json"]
+                st.toast("🔄 Τα φίλτρα καθαρίστηκαν!")
+                st.rerun()
+
+    # Φιλτράρισμα Δεδομένων
+    start = date_range[0].strftime('%Y-%m-%d')
+    end = date_range[1].strftime('%Y-%m-%d') if len(date_range) > 1 else start
+
+    mask = (df["Date"] >= start) & (df["Date"] <= end) & \
+           df["Project"].isin(sel_proj) & df["Assignee"].isin(sel_auth) & \
+           df["Charge Type"].isin(sel_charge) & df["Time Type"].isin(sel_time)
+
+    if "Partner Name" in df.columns:
+        mask = mask & df["Partner Name"].isin(sel_partner)
+    if "LSP Customer Name" in df.columns:
+        mask = mask & df["LSP Customer Name"].isin(sel_lsp)
+
+    if "Parent Category" in df.columns and sel_comp:
+        pattern = '|'.join([re.escape(c) for c in sel_comp])
+        mask = mask & df["Parent Category"].str.contains(pattern, case=False, na=False)
+
+    filtered_df = df[mask]
     
     st.subheader("📌 Σύνοψη", divider="blue")
     m1, m2, m3, m4 = st.columns(4)
@@ -2167,9 +2304,12 @@ def render_response_times_content():
                 st.session_state["rt_filter_project"] = sorted(rt_df["Project"].dropna().unique().tolist())
                 st.session_state["rt_filter_status"] = sorted(rt_df["Status"].dropna().unique().tolist())
                 st.session_state["rt_filter_subcategory"] = sorted(rt_df["SubCategory"].dropna().unique().tolist())
-                min_date = rt_df["CreationDate"].min().date() if not rt_df.empty else datetime.now().date()
-                max_date = rt_df["CreationDate"].max().date() if not rt_df.empty else datetime.now().date()
-                st.session_state["rt_filter_date"] = [min_date, max_date]
+                import calendar
+                today = datetime.now().date()
+                start_of_month = today.replace(day=1)
+                last_day = calendar.monthrange(today.year, today.month)[1]
+                end_of_month = today.replace(day=last_day)
+                st.session_state["rt_filter_date"] = [start_of_month, end_of_month]
                 st.session_state["rt_filter_assignee"] = sorted(rt_df["AssigneeName"].dropna().unique().tolist())
                 st.session_state["rt_filter_components"] = sorted(rt_df["Components"].dropna().unique().tolist())
                 st.session_state["rt_filter_partners"] = sorted(rt_df["PartnerName"].dropna().unique().tolist())
@@ -2179,7 +2319,12 @@ def render_response_times_content():
 
         # Saved Previews section (only visible if logged in)
         if st.session_state.logged_in:
-            with st.expander("💾 Saved Previews (Presets) - Χρόνοι Απόκρισης", expanded=False):
+            rt_active_preset_name = st.session_state.get("rt_active_preset_name")
+            rt_expander_title = "💾 Saved Previews (Presets) - Χρόνοι Απόκρισης"
+            if rt_active_preset_name:
+                rt_expander_title += f" (Ενεργό: {rt_active_preset_name})"
+                
+            with st.expander(rt_expander_title, expanded=False):
                 presets = load_user_presets(st.session_state.user_id)
                 rt_presets = [p for p in presets if "rt_filter_project" in p["FiltersJSON"]]
                 
@@ -2306,78 +2451,75 @@ def render_response_times_content():
                                 st.success(f"Κοινοποιήθηκε στον χρήστη {share_with}!")
 
         # 1. Filters Grid
-        col_hdr, col_rst = st.columns([3, 1])
-        with col_hdr:
-            st.markdown("#### 🔍 Φίλτρα Αναζήτησης KPIs")
-        with col_rst:
-            if st.button("🔄 Καθαρισμός Φίλτρων KPIs", type="secondary", use_container_width=True, key="rt_clear_filters_btn"):
-                rt_filter_keys = [
-                    "rt_filter_project",
-                    "rt_filter_status",
-                    "rt_filter_subcategory",
-                    "rt_filter_date",
-                    "rt_filter_assignee",
-                    "rt_filter_components",
-                    "rt_filter_partners",
-                    "rt_filter_customers",
-                    "rt_active_preset_name",
-                    "rt_active_preset_json"
-                ]
-                for k in rt_filter_keys:
-                    if k in st.session_state:
-                        del st.session_state[k]
-                st.toast("🔄 Τα φίλτρα KPIs καθαρίστηκαν!")
-                st.rerun()
-        
-        # Row 1 (4 columns)
-        fcol1, fcol2, fcol3, fcol4 = st.columns(4)
-        # Row 2 (4 columns)
-        fcol5, fcol6, fcol7, fcol8 = st.columns(4)
+        with st.expander("🔍 Φίλτρα Αναζήτησης KPIs", expanded=False):
+            # Clear button row
+            col_btn_space, col_reset = st.columns([3, 1])
+            with col_reset:
+                if st.button("🔄 Καθαρισμός Φίλτρων KPIs", type="secondary", use_container_width=True, key="rt_clear_filters_btn"):
+                    rt_filter_keys = [
+                        "rt_filter_project",
+                        "rt_filter_status",
+                        "rt_filter_subcategory",
+                        "rt_filter_date",
+                        "rt_filter_assignee",
+                        "rt_filter_components",
+                        "rt_filter_partners",
+                        "rt_filter_customers",
+                        "rt_active_preset_name",
+                        "rt_active_preset_json",
+                        "rt_group_key"
+                    ]
+                    for k in rt_filter_keys:
+                        if k in st.session_state:
+                            del st.session_state[k]
+                    st.toast("🔄 Τα φίλτρα KPIs καθαρίστηκαν!")
+                    st.rerun()
 
-        with fcol1:
-            all_projects = sorted(rt_df["Project"].dropna().unique().tolist())
-            selected_projects = st.multiselect("Ανά Project:", options=all_projects, key="rt_filter_project")
-            if not selected_projects: selected_projects = all_projects
+            # Row 1 (4 columns)
+            fcol1, fcol2, fcol3, fcol4 = st.columns(4)
+            # Row 2 (4 columns)
+            fcol5, fcol6, fcol7, fcol8 = st.columns(4)
 
-        with fcol2:
-            all_statuses = sorted(rt_df["Status"].dropna().unique().tolist())
-            selected_statuses = st.multiselect("Ανά Status:", options=all_statuses, key="rt_filter_status")
-            if not selected_statuses: selected_statuses = all_statuses
+            with fcol1:
+                all_projects = sorted(rt_df["Project"].dropna().unique().tolist())
+                selected_projects = st.multiselect("Ανά Project:", options=all_projects, key="rt_filter_project")
+                if not selected_projects: selected_projects = all_projects
 
-        with fcol3:
-            all_subcategories = sorted(rt_df["SubCategory"].dropna().unique().tolist())
-            selected_subcategories = st.multiselect("Ανά Sub Category:", options=all_subcategories, key="rt_filter_subcategory")
-            if not selected_subcategories: selected_subcategories = all_subcategories
+            with fcol2:
+                all_statuses = sorted(rt_df["Status"].dropna().unique().tolist())
+                selected_statuses = st.multiselect("Ανά Status:", options=all_statuses, key="rt_filter_status")
+                if not selected_statuses: selected_statuses = all_statuses
 
-        with fcol4:
-            min_date = rt_df["CreationDate"].min().date() if not rt_df.empty else datetime.now().date()
-            max_date = rt_df["CreationDate"].max().date() if not rt_df.empty else datetime.now().date()
-            date_range = st.date_input(
-                "Εύρος Ημερολογίου (Creation):",
-                min_value=min_value_date,
-                max_value=max_value_date,
-                key="rt_filter_date"
-            ) if (min_value_date := min_date) and (max_value_date := max_date) else None # keep simple
+            with fcol3:
+                all_subcategories = sorted(rt_df["SubCategory"].dropna().unique().tolist())
+                selected_subcategories = st.multiselect("Ανά Sub Category:", options=all_subcategories, key="rt_filter_subcategory")
+                if not selected_subcategories: selected_subcategories = all_subcategories
 
-        with fcol5:
-            all_assignees = sorted(rt_df["AssigneeName"].dropna().unique().tolist())
-            selected_assignees = st.multiselect("Ανά Assignee:", options=all_assignees, key="rt_filter_assignee")
-            if not selected_assignees: selected_assignees = all_assignees
+            with fcol4:
+                date_range = st.date_input(
+                    "Εύρος Ημερολογίου (Creation):",
+                    key="rt_filter_date"
+                )
 
-        with fcol6:
-            all_components = sorted(rt_df["Components"].dropna().unique().tolist())
-            selected_components = st.multiselect("Ανά Components:", options=all_components, key="rt_filter_components")
-            if not selected_components: selected_components = all_components
+            with fcol5:
+                all_assignees = sorted(rt_df["AssigneeName"].dropna().unique().tolist())
+                selected_assignees = st.multiselect("Ανά Assignee:", options=all_assignees, key="rt_filter_assignee")
+                if not selected_assignees: selected_assignees = all_assignees
 
-        with fcol7:
-            all_partners = sorted(rt_df["PartnerName"].dropna().unique().tolist())
-            selected_partners = st.multiselect("Ανά Partner Name:", options=all_partners, key="rt_filter_partners")
-            if not selected_partners: selected_partners = all_partners
+            with fcol6:
+                all_components = sorted(rt_df["Components"].dropna().unique().tolist())
+                selected_components = st.multiselect("Ανά Components:", options=all_components, key="rt_filter_components")
+                if not selected_components: selected_components = all_components
 
-        with fcol8:
-            all_customers = sorted(rt_df["CustomerName"].dropna().unique().tolist())
-            selected_customers = st.multiselect("Ανά LSP Customer:", options=all_customers, key="rt_filter_customers")
-            if not selected_customers: selected_customers = all_customers
+            with fcol7:
+                all_partners = sorted(rt_df["PartnerName"].dropna().unique().tolist())
+                selected_partners = st.multiselect("Ανά Partner Name:", options=all_partners, key="rt_filter_partners")
+                if not selected_partners: selected_partners = all_partners
+
+            with fcol8:
+                all_customers = sorted(rt_df["CustomerName"].dropna().unique().tolist())
+                selected_customers = st.multiselect("Ανά LSP Customer:", options=all_customers, key="rt_filter_customers")
+                if not selected_customers: selected_customers = all_customers
 
         # Parse Date Range
         if isinstance(date_range, tuple) and len(date_range) == 2:
@@ -2417,55 +2559,108 @@ def render_response_times_content():
 
             st.markdown("---")
 
-            # 3. Column Ordering & Config
-            column_order = [
-                "ProjectId", "IssueKey", "Project", "Type", "JiraLink", "AssigneeName", "Components", 
-                "PartnerName", "CustomerName", "Status", "SubCategory", "CreationDate", 
-                "FirstAssignedDate", "FirstResponseDate", "ClosedDate",
-                "Creation->Assigned", "Creation->FirstResponse", 
-                "Assigned->FirstResponse", "Assigned->Closed", "Creation->Closed"
-            ]
-            existing_cols = [c for c in column_order if c in filtered_rt_df.columns]
-            display_df = filtered_rt_df[existing_cols]
+            # 3. Group By Selection
+            group_options = ["Project", "AssigneeName", "Status", "SubCategory", "PartnerName", "CustomerName", "Components"]
+            sel_group = st.multiselect("🗂️ Ομαδοποίηση (Group By) ανά:", options=group_options, key="rt_group_key")
 
-            st.subheader("📊 KPIs by Issue")
-            st.dataframe(
-                display_df,
-                use_container_width=True,
-                height=500,
-                column_config={
-                    "ProjectId": st.column_config.NumberColumn("Project ID", width=90, format="%d"),
-                    "IssueKey": st.column_config.TextColumn("Ticket Key", width=110),
-                    "Project": st.column_config.TextColumn("Project", width=100),
-                    "Type": st.column_config.TextColumn("Type", width=90),
-                    "JiraLink": st.column_config.LinkColumn("Jira", width=90, display_text="Open"),
-                    "AssigneeName": st.column_config.TextColumn("Assignee", width=150),
-                    "Components": st.column_config.TextColumn("Components", width=150),
-                    "PartnerName": st.column_config.TextColumn("Partner Name", width=200),
-                    "CustomerName": st.column_config.TextColumn("Customer Name", width=200),
-                    "Status": st.column_config.TextColumn("Status", width=110),
-                    "SubCategory": st.column_config.TextColumn("Sub Category", width=180),
-                    "CreationDate": st.column_config.DatetimeColumn("Creation Date", width=160, format="DD/MM/YYYY HH:mm"),
-                    "FirstAssignedDate": st.column_config.DatetimeColumn("First Assigned Date", width=160, format="DD/MM/YYYY HH:mm"),
-                    "FirstResponseDate": st.column_config.DatetimeColumn("First Response Date", width=160, format="DD/MM/YYYY HH:mm"),
-                    "ClosedDate": st.column_config.DatetimeColumn("Closed Date", width=160, format="DD/MM/YYYY HH:mm"),
-                    "Creation->Assigned": st.column_config.NumberColumn("Creation → Assigned (Days)", width=240, format="%.2f"),
-                    "Creation->FirstResponse": st.column_config.NumberColumn("Creation → First Response (Days)", width=240, format="%.2f"),
-                    "Assigned->FirstResponse": st.column_config.NumberColumn("Assigned → First Response (Days)", width=240, format="%.2f"),
-                    "Assigned->Closed": st.column_config.NumberColumn("Assigned → Closed (Days)", width=240, format="%.2f"),
-                    "Creation->Closed": st.column_config.NumberColumn("Creation → Closed (Days)", width=220, format="%.2f"),
+            if sel_group:
+                # Aggregation mapping
+                agg_dict = {
+                    "IssueKey": "count",
+                    "Creation->Assigned": "mean",
+                    "Creation->FirstResponse": "mean",
+                    "Assigned->FirstResponse": "mean",
+                    "Assigned->Closed": "mean",
+                    "Creation->Closed": "mean"
                 }
-            )
+                # Group by and aggregate
+                grouped_df = filtered_rt_df.groupby(sel_group).agg(agg_dict).reset_index()
+                # Rename columns
+                grouped_df = grouped_df.rename(columns={
+                    "IssueKey": "Total Tickets",
+                    "Creation->Assigned": "Creation → Assigned (Mean Days)",
+                    "Creation->FirstResponse": "Creation → First Response (Mean Days)",
+                    "Assigned->FirstResponse": "Assigned → First Response (Mean Days)",
+                    "Assigned->Closed": "Assigned → Closed (Mean Days)",
+                    "Creation->Closed": "Creation → Closed (Mean Days)"
+                })
+                
+                st.subheader("📊 KPIs Grouped Summary")
+                st.dataframe(
+                    grouped_df,
+                    use_container_width=True,
+                    height=400,
+                    column_config={
+                        "Total Tickets": st.column_config.NumberColumn("Total Tickets", format="%d"),
+                        "Creation → Assigned (Mean Days)": st.column_config.NumberColumn("Creation → Assigned (Avg Days)", format="%.2f"),
+                        "Creation → First Response (Mean Days)": st.column_config.NumberColumn("Creation → First Response (Avg Days)", format="%.2f"),
+                        "Assigned → First Response (Mean Days)": st.column_config.NumberColumn("Assigned → First Response (Avg Days)", format="%.2f"),
+                        "Assigned → Closed (Mean Days)": st.column_config.NumberColumn("Assigned → Closed (Avg Days)", format="%.2f"),
+                        "Creation → Closed (Mean Days)": st.column_config.NumberColumn("Creation → Closed (Avg Days)", format="%.2f"),
+                    }
+                )
+                
+                # Download button
+                excel_data = rt_convert_df_to_excel(grouped_df)
+                st.download_button(
+                    label="📥 Λήψη σε Excel",
+                    data=excel_data,
+                    file_name="jira_kpi_grouped.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    key="rt_download_btn_grouped"
+                )
+            else:
+                # 3. Column Ordering & Config (Detailed view)
+                column_order = [
+                    "ProjectId", "IssueKey", "Project", "Type", "JiraLink", "AssigneeName", "Components", 
+                    "PartnerName", "CustomerName", "Status", "SubCategory", "CreationDate", 
+                    "FirstAssignedDate", "FirstResponseDate", "ClosedDate",
+                    "Creation->Assigned", "Creation->FirstResponse", 
+                    "Assigned->FirstResponse", "Assigned->Closed", "Creation->Closed"
+                ]
+                existing_cols = [c for c in column_order if c in filtered_rt_df.columns]
+                display_df = filtered_rt_df[existing_cols]
 
-            # Download Button
-            excel_data = rt_convert_df_to_excel(display_df)
-            st.download_button(
-                label="📥 Λήψη σε Excel",
-                data=excel_data,
-                file_name="jira_kpi_filtered.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary"
-            )
+                st.subheader("📊 KPIs by Issue")
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    height=500,
+                    column_config={
+                        "ProjectId": st.column_config.NumberColumn("Project ID", width=90, format="%d"),
+                        "IssueKey": st.column_config.TextColumn("Ticket Key", width=110),
+                        "Project": st.column_config.TextColumn("Project", width=100),
+                        "Type": st.column_config.TextColumn("Type", width=90),
+                        "JiraLink": st.column_config.LinkColumn("Jira", width=90, display_text="Open"),
+                        "AssigneeName": st.column_config.TextColumn("Assignee", width=150),
+                        "Components": st.column_config.TextColumn("Components", width=150),
+                        "PartnerName": st.column_config.TextColumn("Partner Name", width=200),
+                        "CustomerName": st.column_config.TextColumn("Customer Name", width=200),
+                        "Status": st.column_config.TextColumn("Status", width=110),
+                        "SubCategory": st.column_config.TextColumn("Sub Category", width=180),
+                        "CreationDate": st.column_config.DatetimeColumn("Creation Date", width=160, format="DD/MM/YYYY HH:mm"),
+                        "FirstAssignedDate": st.column_config.DatetimeColumn("First Assigned Date", width=160, format="DD/MM/YYYY HH:mm"),
+                        "FirstResponseDate": st.column_config.DatetimeColumn("First Response Date", width=160, format="DD/MM/YYYY HH:mm"),
+                        "ClosedDate": st.column_config.DatetimeColumn("Closed Date", width=160, format="DD/MM/YYYY HH:mm"),
+                        "Creation->Assigned": st.column_config.NumberColumn("Creation → Assigned (Days)", width=240, format="%.2f"),
+                        "Creation->FirstResponse": st.column_config.NumberColumn("Creation → First Response (Days)", width=240, format="%.2f"),
+                        "Assigned->FirstResponse": st.column_config.NumberColumn("Assigned → First Response (Days)", width=240, format="%.2f"),
+                        "Assigned->Closed": st.column_config.NumberColumn("Assigned → Closed (Days)", width=240, format="%.2f"),
+                        "Creation->Closed": st.column_config.NumberColumn("Creation → Closed (Days)", width=220, format="%.2f"),
+                    }
+                )
+
+                # Download Button
+                excel_data = rt_convert_df_to_excel(display_df)
+                st.download_button(
+                    label="📥 Λήψη σε Excel",
+                    data=excel_data,
+                    file_name="jira_kpi_filtered.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    key="rt_download_btn_detailed"
+                )
 
         st.markdown("---")
 
@@ -2704,55 +2899,28 @@ def render_manual_content():
         2. **Άρθρα Knowledge Base**: Αντίστοιχα, στην καρτέλα `💡 Knowledge Base` εμφανίζεται η επιλογή **`⚙️ Διαχείριση Άρθρων`** για τη δημιουργία και κατηγοριοποίηση νέων εσωτερικών εγχειριδίων.
         """)
 
-# --- Render Tab Layout ---
-if st.session_state.logged_in:
-    tab_list = ["📊 Timesheet", "💡 Knowledge Base", "📢 Ανακοινώσεις & Tips", "👤 Το Προφίλ μου"]
-    if st.session_state.user_role in ["Administrator", "Team Leader"]:
-        tab_list.append("👥 Διαχείριση Ομάδων")
-        tab_list.append("⏱️ Χρόνοι Απόκρισης")
-
-    if st.session_state.user_role == "Administrator":
-        tab_list.append("🚀 ETL Manager")
-    tab_list.append("📖 Οδηγίες Χρήσης")
-        
-    main_tabs = st.tabs(tab_list)
-    
-    with main_tabs[0]:
-        render_dashboard_content(df, last_updated, start, end, sel_proj, sel_auth, sel_charge, sel_time, sel_partner, sel_lsp, sel_comp, filtered_df)
-
-    with main_tabs[1]:
-        render_knowledge_base_content()
-
-    with main_tabs[2]:
-        render_announcements_and_tips()
-        
-    with main_tabs[3]:
-        render_profile_content()
-        
-    idx = 4
-    if st.session_state.user_role in ["Administrator", "Team Leader"]:
-        with main_tabs[idx]:
-            render_management_content()
-        idx += 1
-        with main_tabs[idx]:
-            render_response_times_content()
-        idx += 1
-
-    if st.session_state.user_role == "Administrator":
-        with main_tabs[idx]:
-            render_etl_manager_content()
-        idx += 1
-        
-    with main_tabs[idx]:
-        render_manual_content()
+# --- Render Layout based on Sidebar Selection ---
+if "selected_page" in st.session_state:
+    selected_page = st.session_state.selected_page
 else:
-    tab_list = ["📊 Timesheet", "💡 Knowledge Base", "📖 Οδηγίες Χρήσης"]
-    main_tabs = st.tabs(tab_list)
-    
-    with main_tabs[0]:
-        render_dashboard_content(df, last_updated, start, end, sel_proj, sel_auth, sel_charge, sel_time, sel_partner, sel_lsp, sel_comp, filtered_df)
-    with main_tabs[1]:
-        render_manual_content()
+    selected_page = "📊 Timesheet"
+
+if selected_page == "📊 Timesheet":
+    render_dashboard_content(df, last_updated)
+elif selected_page == "💡 Knowledge Base":
+    render_knowledge_base_content()
+elif selected_page == "📢 Ανακοινώσεις & Tips":
+    render_announcements_and_tips()
+elif selected_page == "👤 Το Προφίλ μου":
+    render_profile_content()
+elif selected_page == "👥 Διαχείριση Ομάδων":
+    render_management_content()
+elif selected_page == "⏱️ Χρόνοι Απόκρισης":
+    render_response_times_content()
+elif selected_page == "🚀 ETL Manager":
+    render_etl_manager_content()
+elif selected_page == "📖 Οδηγίες Χρήσης":
+    render_manual_content()
 
 # Backup current widget keys to prevent state loss on early reruns
 st.session_state["widget_backup"] = {
