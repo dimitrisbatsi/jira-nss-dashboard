@@ -3258,6 +3258,23 @@ def render_manual_content():
         3. **📖 Dev Docs**: Πρόσβαση στην τεχνική τεκμηρίωση του συστήματος απευθείας εντός της εφαρμογής. Επιτρέπεται η εναλλαγή μεταξύ της αρχιτεκτονικής του Dashboard & ETL Pipeline (`DEVELOPER_DOCS.md`) και του συγχρονισμού της βάσης (`sync_db_docs.md`), με πλήρη υποστήριξη οπτικοποίησης διαγραμμάτων ροής Mermaid.
         """)
 
+    # expander 10 - Changelog
+    with st.expander("📋 10. Ιστορικό Εκδόσεων (Changelog)"):
+        st.markdown("""
+        ### Έκδοση 26.5.4 (2026-06-23)
+        * **Νέο:** Προσθήκη καρτέλας `📖 Dev Docs` στον ETL Manager με αυτόνομη απόδοση Mermaid.js διαγραμμάτων (εναλλαγή μεταξύ `DEVELOPER_DOCS.md` και `sync_db_docs.md`).
+        * **Νέο:** Προσθήκη επιλογής `🎫 Jira Full Sync (Από Μηδέν)` στον ETL Manager.
+        * **Νέο:** Μηχανισμός ελεύθερης αναζήτησης άρθρων στη Βάση Γνώσης (`💡 Knowledge Base`).
+        * **Νέο:** Εμφάνιση συντάκτη (`Author`) σε ανακοινώσεις, tips και KB άρθρα.
+        * **Βελτίωση:** Πλήρης αναδιοργάνωση και ομαδοποίηση του μενού πλοήγησης (Sidebar).
+        * **Fix:** Επίλυση Streamlit Deprecation Warnings (`use_container_width`) και Pandas `UserWarning` για τις συνδέσεις στη βάση.
+        
+        ### Έκδοση 26.5.0 (2026-06-19)
+        * **Βελτίωση:** Επανασχεδιασμός Sidebar με premium left-aligned flat buttons.
+        * **Βελτίωση:** Πτυσσόμενα panels φίλτρων (Expander Blocks) για εξοικονόμηση χώρου.
+        * **Νέο:** Δυναμική ομαδοποίηση (Group By) και εξαγωγή σε Excel στους Χρόνους Απόκρισης (KPIs).
+        """)
+
 # --- Render Layout based on Sidebar Selection ---
 if "selected_page" in st.session_state:
     selected_page = st.session_state.selected_page
