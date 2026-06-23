@@ -150,7 +150,7 @@ def run_incremental_issues_and_children_etl():
         else:
             print("\n[ΠΡΟΕΙΔΟΠΟΙΗΣΗ] Το Sync ολοκληρώθηκε με σφάλματα (δείτε πίνακα SyncLogDetails).")
 
-def run_incremental_jira_etl():
+def run_incremental_jira_etl(ignore_last_sync=False):
     entity_name = "Jira_Issues"
     current_sync_start = datetime.now(timezone.utc)
     client = JiraAPIClient()
@@ -180,14 +180,18 @@ def run_incremental_jira_etl():
             return
 
         projects_jql_str = ", ".join(jira_projects)
-        last_sync = get_last_sync_date(engine, entity_name)
-        last_sync_str = last_sync.strftime('%Y-%m-%d %H:%M')
+        if ignore_last_sync:
+            last_sync_str = "2000-01-01 00:00"
+            print("[*] Running Jira Sync from scratch (ignore_last_sync = True)")
+        else:
+            last_sync = get_last_sync_date(engine, entity_name)
+            last_sync_str = last_sync.strftime('%Y-%m-%d %H:%M')
         current_sync_start = datetime.now(timezone.utc)
         
         jql_query = (
             f'project IN ({projects_jql_str}) '
             f'AND updated >= "{last_sync_str}" '
-            f'AND "product name[dropdown]" IN ("PYLON COMMERCIAL", "PYLON ERP", "PYLON FLEX") '
+            f'AND "product name[dropdown]" IN ("PYLON COMMERCIAL", "PYLON ERP", "PYLON FLEX", "Galaxy Enterprise") '
             f'ORDER BY updated ASC'
         )
 

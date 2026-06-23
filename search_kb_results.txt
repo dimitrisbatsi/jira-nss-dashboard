@@ -1,0 +1,25 @@
+795: # --- ContentHub Helpers (Announcements & Pro Tips) ---
+859: def load_kb_articles(only_active=True):
+872: def save_kb_article(title, category, content, user_id):
+885: def update_kb_article(article_id, title, category, content, is_active):
+898: def delete_kb_article(article_id):
+1315:     # --- Top Banner: Latest Announcement & Pro Tip (Shown directly) ---
+1316:     latest_announcement = load_latest_content("Announcement")
+1317:     latest_protip = load_latest_content("ProTip")
+1319:     if latest_announcement or latest_protip:
+1323:             if latest_announcement:
+1324:                 st.info(f"📢 **Πρόσφατη Ανακοίνωση: {latest_announcement['Title']}**\n\n{latest_announcement['Body']}")
+1327:             if latest_protip:
+1328:                 st.success(f"💡 **Weekly Pro Tip: {latest_protip['Title']}**\n\n{latest_protip['Body']}")
+1767: def render_announcements_and_tips():
+1796:         show_content_list("Announcement")
+1800:         show_content_list("ProTip")
+1809:                     c_type = st.selectbox("Τύπος Περιεχομένου", ["Announcement", "ProTip"])
+1832:                             edit_type = st.selectbox("Τύπος", ["Announcement", "ProTip"], index=0 if item['ContentType'] == "Announcement" else 1)
+1863:         articles = load_kb_articles(only_active=True)
+1899:                             if save_kb_article(title.strip(), cat.strip(), content.strip(), st.session_state.user_id):
+1900:                                 write_system_log(st.session_state.user_id, "CREATE_KB_ARTICLE", title)
+1906:                 all_articles = load_kb_articles(only_active=False)
+1923:                                 if update_kb_article(art['ArticleID'], edit_title, edit_cat, edit_content, edit_active):
+1928:                                 if delete_kb_article(art['ArticleID']):
+2998:     render_announcements_and_tips()

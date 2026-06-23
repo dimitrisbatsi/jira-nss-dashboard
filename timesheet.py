@@ -18,7 +18,32 @@ from modules.test_users_etl import run_users_etl, run_jira_users_etl
 from modules.test_components_etl import run_components_etl, run_jira_components_etl
 from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl
 
-APP_VERSION = "26.5.1 (2026-06-19)"
+APP_VERSION = "26.5.4 (2026-06-23)"
+
+# --- Helper functions for state updates ---
+def on_only_me_click(username):
+    st.session_state["auth_key"] = [username]
+
+def clear_keys_and_rerun(keys_to_clear):
+    for k in keys_to_clear:
+        if k in st.session_state:
+            del st.session_state[k]
+        if "widget_backup" in st.session_state and k in st.session_state["widget_backup"]:
+            st.session_state["widget_backup"][k] = None
+    st.rerun()
+
+def is_content_visible(target_apps_str):
+    active_apps = st.session_state.get("active_app_view", ["Galaxy", "Pylon"])
+    if not active_apps:
+        return False
+    if len(active_apps) >= 2:
+        return True
+    if not target_apps_str:
+        return True
+    target_apps = [a.strip() for a in target_apps_str.split(",") if a.strip()]
+    if not target_apps:
+        return True
+    return any(app in active_apps for app in target_apps)
 
 # --- 1. Ρυθμίσεις Σελίδας ---
 st.set_page_config(layout="wide", page_title="NSS Support Hub", page_icon="📊")
@@ -31,6 +56,7 @@ if "logged_in" not in st.session_state:
     st.session_state.user_role = None
     st.session_state.display_name = None
     st.session_state.default_project = None
+    st.session_state.app_preferences = None
 
 # Restore keys if they went missing due to an early rerun
 if "widget_backup" in st.session_state:
@@ -227,6 +253,36 @@ def get_db_engine():
             except Exception:
                 pass
                 
+            # Ensure TargetApps column exists in ContentHub table
+            try:
+                with engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        "IF COL_LENGTH('ContentHub', 'TargetApps') IS NULL "
+                        "ALTER TABLE ContentHub ADD TargetApps NVARCHAR(255) NULL;"
+                    )
+            except Exception:
+                pass
+
+            # Ensure TargetApps column exists in KBArticles table
+            try:
+                with engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        "IF COL_LENGTH('KBArticles', 'TargetApps') IS NULL "
+                        "ALTER TABLE KBArticles ADD TargetApps NVARCHAR(255) NULL;"
+                    )
+            except Exception:
+                pass
+
+            # Ensure AppPreferences column exists in Users table
+            try:
+                with engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        "IF COL_LENGTH('Users', 'AppPreferences') IS NULL "
+                        "ALTER TABLE Users ADD AppPreferences NVARCHAR(255) NULL;"
+                    )
+            except Exception:
+                pass
+                
             # Ensure System_Logs table exists
             try:
                 with engine.begin() as conn:
@@ -261,7 +317,7 @@ def verify_user_credentials(username: str, password_plain: str):
     try:
         with engine.connect() as conn:
             query = text(
-                "SELECT u.UserID, u.Username, u.Email, u.RoleID, u.DefaultProject, u.DisplayName, r.RoleName "
+                "SELECT u.UserID, u.Username, u.Email, u.RoleID, u.DefaultProject, u.DisplayName, r.RoleName, u.AppPreferences "
                 "FROM Users u "
                 "JOIN User_Roles r ON u.RoleID = r.RoleID "
                 "WHERE u.Username = :username AND u.PasswordHash = :pwd_hash AND u.IsActive = 1"
@@ -275,7 +331,8 @@ def verify_user_credentials(username: str, password_plain: str):
                     "RoleID": res[3],
                     "DefaultProject": res[4],
                     "DisplayName": res[5],
-                    "RoleName": res[6]
+                    "RoleName": res[6],
+                    "AppPreferences": res[7]
                 }
     except Exception as e:
         st.error(f"Σφάλμα κατά την ταυτοποίηση: {e}")
@@ -309,7 +366,7 @@ def verify_user_session(session_token: str):
     try:
         with engine.connect() as conn:
             query = text(
-                "SELECT u.UserID, u.Username, u.Email, u.RoleID, u.DefaultProject, u.DisplayName, r.RoleName "
+                "SELECT u.UserID, u.Username, u.Email, u.RoleID, u.DefaultProject, u.DisplayName, r.RoleName, u.AppPreferences "
                 "FROM User_Sessions s "
                 "JOIN Users u ON s.UserID = u.UserID "
                 "JOIN User_Roles r ON u.RoleID = r.RoleID "
@@ -324,7 +381,8 @@ def verify_user_session(session_token: str):
                     "RoleID": res[3],
                     "DefaultProject": res[4],
                     "DisplayName": res[5],
-                    "RoleName": res[6]
+                    "RoleName": res[6],
+                    "AppPreferences": res[7]
                 }
     except Exception:
         pass
@@ -553,6 +611,22 @@ def update_user_default_project(user_id, project_name):
             conn.execute(
                 text("UPDATE Users SET DefaultProject = :proj WHERE UserID = :user_id"),
                 {"proj": project_name, "user_id": user_id}
+            )
+        return True
+    except Exception as e:
+        st.error(f"Σφάλμα: {e}")
+        return False
+
+def update_user_app_preferences(user_id, app_preferences_str):
+    engine = get_db_engine()
+    if not engine:
+        return False
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE Users SET AppPreferences = :prefs WHERE UserID = :user_id"),
+                {"prefs": app_preferences_str, "user_id": user_id}
             )
         return True
     except Exception as e:
@@ -788,11 +862,16 @@ def load_latest_content(content_type):
     try:
         with engine.connect() as conn:
             query = text("""
-                SELECT TOP 1 Title, Body, CreatedAt FROM ContentHub 
-                WHERE ContentType = :ctype AND IsActive = 1 ORDER BY CreatedAt DESC
+                SELECT c.Title, c.Body, c.CreatedAt, c.TargetApps, COALESCE(u.DisplayName, u.Username, 'Άγνωστος') AS Author 
+                FROM ContentHub c
+                LEFT JOIN Users u ON c.UserID = u.UserID
+                WHERE c.ContentType = :ctype AND c.IsActive = 1 ORDER BY c.CreatedAt DESC
             """)
-            res = conn.execute(query, {"ctype": content_type}).fetchone()
-            return {"Title": res[0], "Body": res[1], "CreatedAt": res[2]} if res else None
+            res = conn.execute(query, {"ctype": content_type}).fetchall()
+            for r in res:
+                if is_content_visible(r[3]):
+                    return {"Title": r[0], "Body": r[1], "CreatedAt": r[2], "Author": r[4]}
+            return None
     except Exception: return None
 
 def load_all_content_admin():
@@ -801,33 +880,38 @@ def load_all_content_admin():
     from sqlalchemy import text
     try:
         with engine.connect() as conn:
-            query = text("SELECT ContentID, Title, Body, ContentType, IsActive FROM ContentHub ORDER BY CreatedAt DESC")
+            query = text("""
+                SELECT c.ContentID, c.Title, c.Body, c.ContentType, c.IsActive, c.TargetApps, COALESCE(u.DisplayName, u.Username, 'Άγνωστος') AS Author
+                FROM ContentHub c
+                LEFT JOIN Users u ON c.UserID = u.UserID
+                ORDER BY c.CreatedAt DESC
+            """)
             res = conn.execute(query).fetchall()
-            return [{"ContentID": r[0], "Title": r[1], "Body": r[2], "ContentType": r[3], "IsActive": bool(r[4])} for r in res]
+            return [{"ContentID": r[0], "Title": r[1], "Body": r[2], "ContentType": r[3], "IsActive": bool(r[4]), "TargetApps": r[5], "Author": r[6]} for r in res]
     except Exception: return []
 
-def save_content_item(title, body, content_type, user_id):
+def save_content_item(title, body, content_type, user_id, target_apps=None):
     engine = get_db_engine()
     if not engine: return False
     from sqlalchemy import text
     try:
         with engine.begin() as conn:
             conn.execute(
-                text("INSERT INTO ContentHub (Title, Body, ContentType, UserID) VALUES (:title, :body, :ctype, :uid)"),
-                {"title": title, "body": body, "ctype": content_type, "uid": user_id}
+                text("INSERT INTO ContentHub (Title, Body, ContentType, UserID, TargetApps) VALUES (:title, :body, :ctype, :uid, :tapps)"),
+                {"title": title, "body": body, "ctype": content_type, "uid": user_id, "tapps": target_apps}
             )
         return True
     except Exception: return False
 
-def update_content_item(content_id, title, body, content_type, is_active):
+def update_content_item(content_id, title, body, content_type, is_active, target_apps=None):
     engine = get_db_engine()
     if not engine: return False
     from sqlalchemy import text
     try:
         with engine.begin() as conn:
             conn.execute(
-                text("UPDATE ContentHub SET Title = :title, Body = :body, ContentType = :ctype, IsActive = :active WHERE ContentID = :cid"),
-                {"title": title, "body": body, "ctype": content_type, "active": 1 if is_active else 0, "cid": content_id}
+                text("UPDATE ContentHub SET Title = :title, Body = :body, ContentType = :ctype, IsActive = :active, TargetApps = :tapps WHERE ContentID = :cid"),
+                {"title": title, "body": body, "ctype": content_type, "active": 1 if is_active else 0, "tapps": target_apps, "cid": content_id}
             )
         return True
     except Exception: return False
@@ -850,35 +934,39 @@ def load_kb_articles(only_active=True):
     from sqlalchemy import text
     try:
         with engine.connect() as conn:
-            sql = "SELECT ArticleID, Title, Category, Content, IsActive FROM KBArticles"
-            if only_active: sql += " WHERE IsActive = 1"
-            sql += " ORDER BY Category, CreatedAt DESC"
+            sql = """
+                SELECT k.ArticleID, k.Title, k.Category, k.Content, k.IsActive, k.TargetApps, COALESCE(u.DisplayName, u.Username, 'Άγνωστος') AS Author
+                FROM KBArticles k
+                LEFT JOIN Users u ON k.UserID = u.UserID
+            """
+            if only_active: sql += " WHERE k.IsActive = 1"
+            sql += " ORDER BY k.Category, k.CreatedAt DESC"
             res = conn.execute(text(sql)).fetchall()
-            return [{"ArticleID": r[0], "Title": r[1], "Category": r[2], "Content": r[3], "IsActive": bool(r[4])} for r in res]
+            return [{"ArticleID": r[0], "Title": r[1], "Category": r[2], "Content": r[3], "IsActive": bool(r[4]), "TargetApps": r[5], "Author": r[6]} for r in res]
     except Exception: return []
 
-def save_kb_article(title, category, content, user_id):
+def save_kb_article(title, category, content, user_id, target_apps=None):
     engine = get_db_engine()
     if not engine: return False
     from sqlalchemy import text
     try:
         with engine.begin() as conn:
             conn.execute(
-                text("INSERT INTO KBArticles (Title, Category, Content, UserID) VALUES (:title, :cat, :content, :uid)"),
-                {"title": title, "cat": category, "content": content, "uid": user_id}
+                text("INSERT INTO KBArticles (Title, Category, Content, UserID, TargetApps) VALUES (:title, :cat, :content, :uid, :tapps)"),
+                {"title": title, "cat": category, "content": content, "uid": user_id, "tapps": target_apps}
             )
         return True
     except Exception: return False
 
-def update_kb_article(article_id, title, category, content, is_active):
+def update_kb_article(article_id, title, category, content, is_active, target_apps=None):
     engine = get_db_engine()
     if not engine: return False
     from sqlalchemy import text
     try:
         with engine.begin() as conn:
             conn.execute(
-                text("UPDATE KBArticles SET Title = :title, Category = :cat, Content = :content, IsActive = :active WHERE ArticleID = :aid"),
-                {"title": title, "cat": category, "content": content, "active": 1 if is_active else 0, "aid": article_id}
+                text("UPDATE KBArticles SET Title = :title, Category = :cat, Content = :content, IsActive = :active, TargetApps = :tapps WHERE ArticleID = :aid"),
+                {"title": title, "cat": category, "content": content, "active": 1 if is_active else 0, "tapps": target_apps, "aid": article_id}
             )
         return True
     except Exception: return False
@@ -1090,6 +1178,7 @@ if not st.session_state.logged_in:
                         st.session_state.user_role = user["RoleName"]
                         st.session_state.display_name = user["DisplayName"]
                         st.session_state.default_project = user["DefaultProject"]
+                        st.session_state.app_preferences = user.get("AppPreferences")
                         if "filters_init" in st.session_state:
                             del st.session_state["filters_init"]
                     else:
@@ -1105,7 +1194,7 @@ if not st.session_state.logged_in:
         login_username = st.text_input("Username", key="sidebar_login_username")
         login_password = st.text_input("Password", type="password", key="sidebar_login_password")
         remember_me = st.checkbox("Να με θυμάσαι", key="login_remember_me")
-        if st.button("Είσοδος", type="primary", use_container_width=True):
+        if st.button("Είσοδος", type="primary", width='stretch'):
             user = verify_user_credentials(login_username, login_password)
             if user:
                 st.session_state.logged_in = True
@@ -1114,6 +1203,7 @@ if not st.session_state.logged_in:
                 st.session_state.user_role = user["RoleName"]
                 st.session_state.display_name = user["DisplayName"]
                 st.session_state.default_project = user["DefaultProject"]
+                st.session_state.app_preferences = user.get("AppPreferences")
                 if "filters_init" in st.session_state:
                     del st.session_state["filters_init"]
                 
@@ -1132,7 +1222,7 @@ else:
     st.sidebar.write(f"Συνδεδεμένος: **{st.session_state.display_name or st.session_state.username}**")
     st.sidebar.write(f"Ρόλος: `{st.session_state.user_role}`")
     
-    if st.sidebar.button("Αποσύνδεση", type="secondary", use_container_width=True):
+    if st.sidebar.button("Αποσύνδεση", type="secondary", width='stretch'):
         cookie_val = st.context.cookies.get("nss_session")
         if cookie_val:
             import urllib.parse
@@ -1148,6 +1238,11 @@ else:
         st.session_state.user_role = None
         st.session_state.display_name = None
         st.session_state.default_project = None
+        st.session_state.app_preferences = None
+        if "active_app_view" in st.session_state:
+            del st.session_state["active_app_view"]
+        if "active_app_view_widget" in st.session_state:
+            del st.session_state["active_app_view_widget"]
         if "filters_init" in st.session_state:
             del st.session_state["filters_init"]
         if "widget_backup" in st.session_state:
@@ -1178,26 +1273,52 @@ if selected_page not in valid_pages:
 def draw_nav_button(label, page_name):
     is_active = (selected_page == page_name)
     btn_type = "primary" if is_active else "secondary"
-    if st.sidebar.button(label, key=f"nav_btn_{page_name}", type=btn_type, use_container_width=True):
+    if st.sidebar.button(label, key=f"nav_btn_{page_name}", type=btn_type, width='stretch'):
         st.session_state.selected_page = page_name
         st.rerun()
 
-st.sidebar.markdown('<div class="menu-section-header">🧭 Κύριο Μενού</div>', unsafe_allow_html=True)
-draw_nav_button("📊 Timesheet", "📊 Timesheet")
-draw_nav_button("💡 Knowledge Base", "💡 Knowledge Base")
-draw_nav_button("📢 Ανακοινώσεις & Tips", "📢 Ανακοινώσεις & Tips")
+# 1. User Guide / Manual at the very top
+st.sidebar.markdown('<div class="menu-section-header">📖 Οδηγός</div>', unsafe_allow_html=True)
 draw_nav_button("📖 Οδηγίες Χρήσης", "📖 Οδηγίες Χρήσης")
 
-if st.session_state.logged_in:
-    draw_nav_button("👤 Το Προφίλ μου", "👤 Το Προφίλ μου")
-
-# Advanced Menu section for Admins / Team Leaders
+# 2. Group: Χρόνοι & Metrics
+st.sidebar.markdown('<div class="menu-section-header">⏱️ Χρόνοι & Metrics</div>', unsafe_allow_html=True)
+draw_nav_button("📊 Timesheet", "📊 Timesheet")
 if st.session_state.logged_in and st.session_state.user_role in ["Administrator", "Team Leader"]:
-    st.sidebar.markdown('<div class="menu-section-header">⚙️ Advanced Menu</div>', unsafe_allow_html=True)
-    draw_nav_button("👥 Διαχείριση Ομάδων", "👥 Διαχείριση Ομάδων")
     draw_nav_button("⏱️ Χρόνοι Απόκρισης", "⏱️ Χρόνοι Απόκρισης")
+
+# 3. Group: Διαδικασίες & Ανακοινώσεις
+st.sidebar.markdown('<div class="menu-section-header">📢 Διαδικασίες & Ανακοινώσεις</div>', unsafe_allow_html=True)
+draw_nav_button("💡 Knowledge Base", "💡 Knowledge Base")
+draw_nav_button("📢 Ανακοινώσεις & Tips", "📢 Ανακοινώσεις & Tips")
+
+# 4. Group: Διαχείριση Λογαριασμού και Ομάδων
+if st.session_state.logged_in:
+    st.sidebar.markdown('<div class="menu-section-header">👤 Διαχείριση Λογαριασμού και Ομάδων</div>', unsafe_allow_html=True)
+    draw_nav_button("👤 Το Προφίλ μου", "👤 Το Προφίλ μου")
+    if st.session_state.user_role in ["Administrator", "Team Leader"]:
+        draw_nav_button("👥 Διαχείριση Ομάδων", "👥 Διαχείριση Ομάδων")
     if st.session_state.user_role == "Administrator":
         draw_nav_button("🚀 ETL Manager", "🚀 ETL Manager")
+st.sidebar.write("---")
+st.sidebar.markdown('<div class="menu-section-header">🖥️ Φιλτράρισμα Εφαρμογών</div>', unsafe_allow_html=True)
+
+if "active_app_view" not in st.session_state:
+    if st.session_state.logged_in:
+        user_pref = st.session_state.get("app_preferences")
+        if user_pref:
+            st.session_state["active_app_view"] = [x.strip() for x in user_pref.split(",") if x.strip()]
+        else:
+            st.session_state["active_app_view"] = ["Galaxy", "Pylon"]
+    else:
+        st.session_state["active_app_view"] = ["Galaxy", "Pylon"]
+
+st.sidebar.multiselect(
+    "Εμφάνιση Περιεχομένου για:",
+    options=["Galaxy", "Pylon"],
+    key="active_app_view"
+)
+
 st.sidebar.write("---")
 st.sidebar.caption(f"**App Version:** {APP_VERSION}")
 
@@ -1309,11 +1430,13 @@ def render_dashboard_content(df, last_updated):
         
         with col_ann:
             if latest_announcement:
-                st.info(f"📢 **Πρόσφατη Ανακοίνωση: {latest_announcement['Title']}**\n\n{latest_announcement['Body']}")
+                author_str = f"\n\n✍️ *Συντάκτης: {latest_announcement['Author']}*" if latest_announcement.get('Author') else ""
+                st.info(f"📢 **Πρόσφατη Ανακοίνωση: {latest_announcement['Title']}**\n\n{latest_announcement['Body']}{author_str}")
                 
         with col_tip:
             if latest_protip:
-                st.success(f"💡 **Weekly Pro Tip: {latest_protip['Title']}**\n\n{latest_protip['Body']}")
+                author_str = f"\n\n✍️ *Συντάκτης: {latest_protip['Author']}*" if latest_protip.get('Author') else ""
+                st.success(f"💡 **Weekly Pro Tip: {latest_protip['Title']}**\n\n{latest_protip['Body']}{author_str}")
         st.write("<br>", unsafe_allow_html=True)
 
     # --- 💾 Saved Previews Section ---
@@ -1375,7 +1498,7 @@ def render_dashboard_content(df, last_updated):
             
             st.markdown("---")
             new_preset_name = st.text_input("Όνομα νέου Preview", placeholder="π.χ. My Support Group", key="ts_new_preset_name")
-            if st.button("Αποθήκευση Τρέχοντος Φίλτρου", type="primary", use_container_width=True, key="ts_save_preset_btn"):
+            if st.button("Αποθήκευση Τρέχοντος Φίλτρου", type="primary", width='stretch', key="ts_save_preset_btn"):
                 if new_preset_name.strip():
                     filters_dict = {
                         "proj_key": st.session_state.get("proj_key", []),
@@ -1406,14 +1529,14 @@ def render_dashboard_content(df, last_updated):
                 if is_default_active:
                     st.markdown("⭐ **Προεπιλεγμένο Preview (αυτόματο)**")
                 else:
-                    if st.button("⭐ Ορισμός ως Προεπιλογή", type="secondary", use_container_width=True, key="ts_set_default_preset_btn"):
+                    if st.button("⭐ Ορισμός ως Προεπιλογή", type="secondary", width='stretch', key="ts_set_default_preset_btn"):
                         if set_preset_as_default(st.session_state.user_id, active_preset_name, "proj_key"):
                             st.toast("✅ Ορίστηκε ως προεπιλεγμένο preview!")
                             st.rerun()
                 
                 col_update, col_reload, col_close = st.columns(3)
                 with col_update:
-                    if st.button("💾 Ενημέρωση", type="primary", use_container_width=True, key="ts_update_preset_btn"):
+                    if st.button("💾 Ενημέρωση", type="primary", width='stretch', key="ts_update_preset_btn"):
                         filters_dict = {
                             "proj_key": st.session_state.get("proj_key", []),
                             "auth_key": st.session_state.get("auth_key", []),
@@ -1431,32 +1554,33 @@ def render_dashboard_content(df, last_updated):
                             st.session_state.active_preset_json = new_json
                             st.toast("✅ Το Preview ενημερώθηκε επιτυχώς!")
                 with col_reload:
-                    if st.button("🔄 Επαναφορά", type="secondary", use_container_width=True, key="ts_reload_preset_btn"):
+                    if st.button("🔄 Επαναφορά", type="secondary", width='stretch', key="ts_reload_preset_btn"):
                         if "active_preset_json" in st.session_state:
                             apply_preset_filters(st.session_state.active_preset_json)
                             st.toast("🔄 Τα αρχικά φίλτρα του Preview επαναφέρθηκαν!")
                             st.rerun()
                 with col_close:
-                    if st.button("❌ Κλείσιμο", type="secondary", use_container_width=True, key="ts_close_preset_btn"):
-                        if "active_preset_name" in st.session_state:
-                            del st.session_state["active_preset_name"]
-                        if "active_preset_json" in st.session_state:
-                            del st.session_state["active_preset_json"]
-                        st.rerun()
+                    if st.button("❌ Κλείσιμο", type="secondary", width='stretch', key="ts_close_preset_btn"):
+                        clear_keys_and_rerun(["active_preset_name", "active_preset_json"])
                     
                 st.markdown("---")
                 all_users = load_all_active_users()
                 other_users = [u for u in all_users if u["UserID"] != st.session_state.user_id]
                 other_user_names = [u["Username"] for u in other_users]
                 
-                st.markdown("**Κοινοποίηση σε άλλον χρήστη:**")
-                share_with = st.selectbox("Επιλέξτε Χρήστη", options=["-- Επιλογή --"] + other_user_names, key="ts_preset_share_user_select")
-                if st.button("Κοινοποίηση", type="secondary", use_container_width=True, key="ts_preset_share_btn"):
-                    if share_with != "-- Επιλογή --":
-                        target_user = next(u for u in other_users if u["Username"] == share_with)
+                st.markdown("**Κοινοποίηση σε χρήστες:**")
+                share_with = st.multiselect("Επιλέξτε Χρήστες", options=other_user_names, key="ts_preset_share_users_select")
+                if st.button("Κοινοποίηση", type="secondary", width='stretch', key="ts_preset_share_btn"):
+                    if share_with:
                         shared_name = f"{active_preset_name} (Shared by {st.session_state.username})"
-                        if save_user_preset(target_user["UserID"], shared_name, st.session_state.active_preset_json):
-                            st.success(f"Κοινοποιήθηκε στον χρήστη {share_with}!")
+                        success_users = []
+                        for username in share_with:
+                            target_user = next((u for u in other_users if u["Username"] == username), None)
+                            if target_user:
+                                if save_user_preset(target_user["UserID"], shared_name, st.session_state.active_preset_json):
+                                    success_users.append(username)
+                        if success_users:
+                            st.success(f"Κοινοποιήθηκε επιτυχώς στους χρήστες: {', '.join(success_users)}!")
 
     # --- 🔍 Φίλτρα Αναζήτησης Timesheet Grid ---
     with st.expander("🔍 Φίλτρα Αναζήτησης Timesheet", expanded=False):
@@ -1510,9 +1634,7 @@ def render_dashboard_content(df, last_updated):
                 user_name_to_select = st.session_state.display_name or st.session_state.username
                 all_auth = sorted([str(x) for x in df["Assignee"].dropna().unique()])
                 if user_name_to_select in all_auth:
-                    if st.button("👤 Μόνο Εγώ", type="secondary", use_container_width=True, key="ts_only_me_btn"):
-                        st.session_state["auth_key"] = [user_name_to_select]
-                        st.rerun()
+                    st.button("👤 Μόνο Εγώ", type="secondary", width='stretch', key="ts_only_me_btn", on_click=on_only_me_click, args=(user_name_to_select,))
 
         with tcol5:
             sel_charge = st.multiselect("💰 Charge Type", options=sorted([str(x) for x in df["Charge Type"].dropna().unique()]), key="charge_key")
@@ -1540,17 +1662,14 @@ def render_dashboard_content(df, last_updated):
 
         with tcol10:
             st.write("<div style='height: 24px;'></div>", unsafe_allow_html=True)
-            if st.button("🔄 Καθαρισμός Φίλτρων", type="primary", use_container_width=True, key="ts_clear_filters_btn"):
-                filter_keys = ['proj_key', 'auth_key', 'charge_key', 'time_key', 'partner_key', 'lsp_key', 'comp_key', 'dates_key', 'group_key', 'filters_init', 'group_filter_selectbox_key']
-                for k in filter_keys:
-                    if k in st.session_state:
-                        del st.session_state[k]
-                if "active_preset_name" in st.session_state:
-                    del st.session_state["active_preset_name"]
-                if "active_preset_json" in st.session_state:
-                    del st.session_state["active_preset_json"]
+            if st.button("🔄 Καθαρισμός Φίλτρων", type="primary", width='stretch', key="ts_clear_filters_btn"):
+                filter_keys = [
+                    'proj_key', 'auth_key', 'charge_key', 'time_key', 'partner_key', 'lsp_key', 'comp_key', 
+                    'dates_key', 'group_key', 'filters_init', 'group_filter_selectbox_key', 
+                    'active_preset_name', 'active_preset_json'
+                ]
                 st.toast("🔄 Τα φίλτρα καθαρίστηκαν!")
-                st.rerun()
+                clear_keys_and_rerun(filter_keys)
 
     # Φιλτράρισμα Δεδομένων
     start = date_range[0].strftime('%Y-%m-%d')
@@ -1771,8 +1890,8 @@ def render_announcements_and_tips():
     # Βοηθητική συνάρτηση για rendering λίστας χωρίς expander
     def show_content_list(ctype):
         items = load_all_content_admin()
-        # Φιλτράρισμα: κρατάμε μόνο όσα είναι ενεργά και ανήκουν στη σωστή κατηγορία
-        filtered_items = [i for i in items if i['ContentType'] == ctype and i['IsActive']]
+        # Φιλτράρισμα: κρατάμε μόνο όσα είναι ενεργά, ανήκουν στη σωστή κατηγορία, και είναι ορατά βάσει preferences
+        filtered_items = [i for i in items if i['ContentType'] == ctype and i['IsActive'] and is_content_visible(i.get('TargetApps'))]
         
         if not filtered_items:
             st.info(f"Δεν υπάρχουν ενεργές εγγραφές για {ctype}.")
@@ -1780,6 +1899,7 @@ def render_announcements_and_tips():
             for item in filtered_items:
                 with st.container(border=True):
                     st.markdown(f"#### {item['Title']}")
+                    st.caption(f"✍️ **Συντάκτης:** {item.get('Author', 'Άγνωστος')}")
                     st.markdown("---")
                     st.markdown(item['Body'])
     
@@ -1801,9 +1921,11 @@ def render_announcements_and_tips():
                     c_type = st.selectbox("Τύπος Περιεχομένου", ["Announcement", "ProTip"])
                     title = st.text_input("Τίτλος")
                     body = st.text_area("Περιεχόμενο (Markdown)", height=200)
+                    c_apps = st.multiselect("Εφαρμογές Στόχοι (Αφήστε κενό για όλες)", options=["Galaxy", "Pylon"], default=["Galaxy", "Pylon"], key="add_content_apps_multiselect")
                     if st.form_submit_button("Δημοσίευση", type="primary"):
                         if title.strip() and body.strip():
-                            if save_content_item(title.strip(), body.strip(), c_type, st.session_state.user_id):
+                            app_str = ",".join(c_apps) if c_apps else None
+                            if save_content_item(title.strip(), body.strip(), c_type, st.session_state.user_id, app_str):
                                 write_system_log(st.session_state.user_id, f"CREATE_{c_type.upper()}", f"Τίτλος: {title}")
                                 st.toast("✅ Επιτυχής δημοσίευση!")
                                 st.rerun()
@@ -1824,16 +1946,19 @@ def render_announcements_and_tips():
                             edit_type = st.selectbox("Τύπος", ["Announcement", "ProTip"], index=0 if item['ContentType'] == "Announcement" else 1)
                             edit_body = st.text_area("Περιεχόμενο (Markdown)", value=item['Body'], height=200)
                             edit_active = st.checkbox("Ενεργό (Προβάλλεται)", value=item['IsActive'])
+                            existing_apps = [x.strip() for x in item.get('TargetApps').split(",") if x.strip()] if item.get('TargetApps') else ["Galaxy", "Pylon"]
+                            edit_apps = st.multiselect("Εφαρμογές Στόχοι (Αφήστε κενό για όλες)", options=["Galaxy", "Pylon"], default=existing_apps, key=f"edit_content_apps_{item['ContentID']}")
                             
                             col_up, col_del = st.columns(2)
                             with col_up:
-                                if st.button("💾 Αποθήκευση Αλλαγών", type="primary", use_container_width=True):
-                                    if update_content_item(item['ContentID'], edit_title, edit_body, edit_type, edit_active):
+                                if st.button("💾 Αποθήκευση Αλλαγών", type="primary", width='stretch'):
+                                    edit_app_str = ",".join(edit_apps) if edit_apps else None
+                                    if update_content_item(item['ContentID'], edit_title, edit_body, edit_type, edit_active, edit_app_str):
                                         write_system_log(st.session_state.user_id, "UPDATE_CONTENT", f"ID: {item['ContentID']}")
                                         st.toast("✅ Οι αλλαγές αποθηκεύτηκαν!")
                                         st.rerun()
                             with col_del:
-                                if st.button("🗑️ Μόνιμη Διαγραφή", type="secondary", use_container_width=True):
+                                if st.button("🗑️ Μόνιμη Διαγραφή", type="secondary", width='stretch'):
                                     if delete_content_item(item['ContentID']):
                                         write_system_log(st.session_state.user_id, "DELETE_CONTENT", f"ID: {item['ContentID']}")
                                         st.toast("🗑️ Το στοιχείο διαγράφηκε!")
@@ -1841,8 +1966,10 @@ def render_announcements_and_tips():
 
 # Η συνάρτηση που δημιουργεί το popup παράθυρο για τα άρθρα
 @st.dialog("📖 Ανάγνωση Άρθρου", width="large")
-def open_article_modal(title, content):
+def open_article_modal(title, content, author=None):
     st.subheader(title)
+    if author:
+        st.caption(f"✍️ **Συντάκτης:** {author}")
     st.markdown("---")
     st.markdown(content)
 
@@ -1853,26 +1980,48 @@ def render_knowledge_base_content():
     
     def show_articles():
         articles = load_kb_articles(only_active=True)
+        articles = [art for art in articles if is_content_visible(art.get("TargetApps"))]
         if not articles:
             st.info("Δεν υπάρχουν ακόμη διαθέσιμα άρθρα διαδικασιών.")
         else:
             categories = sorted(list(set([a['Category'] for a in articles])))
-            selected_cat = st.selectbox("📂 Φιλτράρισμα ανά Κατηγορία", ["Όλες οι Κατηγορίες"] + categories)
             
+            # Search & Category layout row
+            col_search, col_cat = st.columns([2, 1])
+            with col_search:
+                search_query = st.text_input("🔍 Αναζήτηση στα άρθρα (Τίτλος, Κατηγορία, Περιεχόμενο)", placeholder="π.χ. Jira, άδεια...", key="kb_search_input")
+            with col_cat:
+                selected_cat = st.selectbox("📂 Φιλτράρισμα ανά Κατηγορία", ["Όλες οι Κατηγορίες"] + categories)
+            
+            visible_articles = []
             for art in articles:
+                # 1. Category check
                 if selected_cat != "Όλες οι Κατηγορίες" and art['Category'] != selected_cat:
                     continue
+                # 2. Text Search check (case-insensitive)
+                if search_query.strip():
+                    q = search_query.lower().strip()
+                    in_title = q in art['Title'].lower()
+                    in_content = q in art['Content'].lower()
+                    in_cat = q in art['Category'].lower()
+                    if not (in_title or in_content or in_cat):
+                        continue
+                visible_articles.append(art)
                 
-                # Αντί για expander, φτιάχνουμε μια "κάρτα" με κουμπί
-                with st.container(border=True):
-                    col_title, col_btn = st.columns([4, 1])
-                    with col_title:
-                        st.markdown(f"**{art['Title']}**")
-                        st.caption(f"📁 Κατηγορία: {art['Category']}")
-                    with col_btn:
-                        # Με το πάτημα καλούμε το modal
-                        if st.button("📖 Διάβασμα", key=f"read_kb_{art['ArticleID']}", use_container_width=True):
-                            open_article_modal(art['Title'], art['Content'])
+            if not visible_articles:
+                st.info("Δεν βρέθηκαν άρθρα με τα συγκεκριμένα κριτήρια φιλτραρίσματος.")
+            else:
+                for art in visible_articles:
+                    # Αντί για expander, φτιάχνουμε μια "κάρτα" με κουμπί
+                    with st.container(border=True):
+                        col_title, col_btn = st.columns([4, 1])
+                        with col_title:
+                            st.markdown(f"**{art['Title']}**")
+                            st.caption(f"📁 Κατηγορία: {art['Category']} | ✍️ Συντάκτης: {art.get('Author', 'Άγνωστος')}")
+                        with col_btn:
+                            # Με το πάτημα καλούμε το modal
+                            if st.button("📖 Διάβασμα", key=f"read_kb_{art['ArticleID']}", width='stretch'):
+                                open_article_modal(art['Title'], art['Content'], art.get('Author'))
 
     if is_management:
         tab_view, tab_manage = st.tabs(["📖 Ανάγνωση Άρθρων", "⚙️ Διαχείριση Άρθρων (CRUD)"])
@@ -1886,9 +2035,11 @@ def render_knowledge_base_content():
                     cat = st.text_input("Κατηγορία (π.χ. Διαδικασίες Jira, Πολιτική Αδειών)")
                     title = st.text_input("Τίτλος Άρθρου")
                     content = st.text_area("Περιεχόμενο (Markdown)", height=300)
+                    kb_apps = st.multiselect("Εφαρμογές Στόχοι (Αφήστε κενό για όλες)", options=["Galaxy", "Pylon"], default=["Galaxy", "Pylon"], key="add_kb_apps_multiselect")
                     if st.form_submit_button("Αποθήκευση Άρθρου", type="primary"):
                         if title.strip() and cat.strip() and content.strip():
-                            if save_kb_article(title.strip(), cat.strip(), content.strip(), st.session_state.user_id):
+                            kb_app_str = ",".join(kb_apps) if kb_apps else None
+                            if save_kb_article(title.strip(), cat.strip(), content.strip(), st.session_state.user_id, kb_app_str):
                                 write_system_log(st.session_state.user_id, "CREATE_KB_ARTICLE", title)
                                 st.toast("✅ Το άρθρο αποθηκεύτηκε!")
                                 st.rerun()
@@ -1908,15 +2059,18 @@ def render_knowledge_base_content():
                         edit_title = st.text_input("Τίτλος", value=art['Title'])
                         edit_content = st.text_area("Περιεχόμενο (Markdown)", value=art['Content'], height=300)
                         edit_active = st.checkbox("Ενεργό", value=art['IsActive'])
+                        existing_kb_apps = [x.strip() for x in art.get('TargetApps').split(",") if x.strip()] if art.get('TargetApps') else ["Galaxy", "Pylon"]
+                        edit_kb_apps = st.multiselect("Εφαρμογές Στόχοι (Αφήστε κενό για όλες)", options=["Galaxy", "Pylon"], default=existing_kb_apps, key=f"edit_kb_apps_{art['ArticleID']}")
                         
                         c_up, c_del = st.columns(2)
                         with c_up:
-                            if st.button("💾 Ενημέρωση Άρθρου", type="primary", use_container_width=True):
-                                if update_kb_article(art['ArticleID'], edit_title, edit_cat, edit_content, edit_active):
+                            if st.button("💾 Ενημέρωση Άρθρου", type="primary", width='stretch'):
+                                edit_kb_app_str = ",".join(edit_kb_apps) if edit_kb_apps else None
+                                if update_kb_article(art['ArticleID'], edit_title, edit_cat, edit_content, edit_active, edit_kb_app_str):
                                     st.toast("✅ Το άρθρο ενημερώθηκε!")
                                     st.rerun()
                         with c_del:
-                            if st.button("🗑️ Διαγραφή Άρθρου", type="secondary", use_container_width=True):
+                            if st.button("🗑️ Διαγραφή Άρθρου", type="secondary", width='stretch'):
                                 if delete_kb_article(art['ArticleID']):
                                     st.toast("🗑️ Το άρθρο διαγράφηκε!")
                                     st.rerun()
@@ -1950,10 +2104,30 @@ def render_profile_content():
         
     new_default_proj = st.selectbox("Προεπιλεγμένο Project", options=default_proj_options, index=current_default_idx)
     
+    st.markdown("##### Προτιμήσεις Εφαρμογών (Ανακοινώσεις, Tips & Knowledge Base)")
+    user_pref = st.session_state.get("app_preferences")
+    default_selected = [x.strip() for x in user_pref.split(",") if x.strip()] if user_pref else ["Galaxy", "Pylon"]
+    
+    new_app_prefs = st.multiselect(
+        "Επιλέξτε τις εφαρμογές που σας ενδιαφέρουν:",
+        options=["Galaxy", "Pylon"],
+        default=default_selected,
+        key="profile_app_prefs_multiselect"
+    )
+    
     if st.button("Αποθήκευση Προτιμήσεων", type="primary"):
         val = None if new_default_proj == "-- Κανένα --" else new_default_proj
-        if update_user_default_project(st.session_state.user_id, val):
+        app_pref_str = ",".join(new_app_prefs)
+        
+        proj_ok = update_user_default_project(st.session_state.user_id, val)
+        app_ok = update_user_app_preferences(st.session_state.user_id, app_pref_str)
+        
+        if proj_ok and app_ok:
             st.session_state.default_project = val
+            st.session_state.app_preferences = app_pref_str
+            st.session_state["active_app_view"] = new_app_prefs
+            if "active_app_view_widget" in st.session_state:
+                st.session_state["active_app_view_widget"] = new_app_prefs
             if "filters_init" in st.session_state:
                 del st.session_state["filters_init"]
             st.success("✅ Οι προτιμήσεις αποθηκεύτηκαν!")
@@ -1996,7 +2170,7 @@ def render_management_content():
                 "Ημ. Δημιουργίας": u["CreatedAt"].strftime("%d/%m/%Y %H:%M") if u["CreatedAt"] else "N/A"
             } for u in users_list])
             
-            st.dataframe(df_users, use_container_width=True, hide_index=True)
+            st.dataframe(df_users, width='stretch', hide_index=True)
             
             # Editing functions for Admins only
             if st.session_state.user_role == "Administrator":
@@ -2162,7 +2336,7 @@ def render_management_content():
         
         col_save, col_del = st.columns(2)
         with col_save:
-            if st.button("Αποθήκευση Αλλαγών", type="primary", use_container_width=True):
+            if st.button("Αποθήκευση Αλλαγών", type="primary", width='stretch'):
                 if edit_group_name.strip():
                     new_member_ids = [user_options[m] for m in edit_members]
                     if update_group_with_members(group_id, edit_group_name.strip(), new_member_ids):
@@ -2180,7 +2354,7 @@ def render_management_content():
                     
         with col_del:
             if st.session_state.user_role == "Administrator":
-                if st.button("🗑️ Διαγραφή Ομάδας", type="secondary", use_container_width=True):
+                if st.button("🗑️ Διαγραφή Ομάδας", type="secondary", width='stretch'):
                     if delete_group(group_id):
                         write_system_log(
                             st.session_state.user_id,
@@ -2201,7 +2375,7 @@ def render_response_times_content():
         st.subheader("⏱️ Χρόνοι Απόκρισης & KPIs (Jira Epic Tickets)", divider="blue")
     with col_btn:
         st.write("") # Spacing
-        load_clicked = st.button("🔄 Φόρτωση / Ανανέωση", type="primary", use_container_width=True)
+        load_clicked = st.button("🔄 Φόρτωση / Ανανέωση", type="primary", width='stretch')
 
     # Custom CSS for multiselect and metrics label spacing
     st.markdown("""
@@ -2393,7 +2567,7 @@ def render_response_times_content():
                 
                 st.markdown("---")
                 new_preset_name = st.text_input("Όνομα νέου Preview (Χρόνοι Απόκρισης)", placeholder="π.χ. Epic Support KPIs", key="rt_new_preset_name")
-                if st.button("Αποθήκευση Τρέχοντος Φίλτρου", type="primary", use_container_width=True, key="rt_save_preset_btn"):
+                if st.button("Αποθήκευση Τρέχοντος Φίλτρου", type="primary", width='stretch', key="rt_save_preset_btn"):
                     if new_preset_name.strip():
                         filters_dict = {
                             "rt_filter_project": st.session_state.get("rt_filter_project", []),
@@ -2423,14 +2597,14 @@ def render_response_times_content():
                     if is_default_active:
                         st.markdown("⭐ **Προεπιλεγμένο Preview (αυτόματο)**")
                     else:
-                        if st.button("⭐ Ορισμός ως Προεπιλογή", type="secondary", use_container_width=True, key="rt_set_default_preset_btn"):
+                        if st.button("⭐ Ορισμός ως Προεπιλογή", type="secondary", width='stretch', key="rt_set_default_preset_btn"):
                             if set_preset_as_default(st.session_state.user_id, rt_active_preset_name, "rt_filter_project"):
                                 st.toast("✅ Ορίστηκε ως προεπιλεγμένο preview!")
                                 st.rerun()
                                 
                     col_update, col_reload, col_close = st.columns(3)
                     with col_update:
-                        if st.button("💾 Ενημέρωση", type="primary", use_container_width=True, key="rt_update_preset_btn"):
+                        if st.button("💾 Ενημέρωση", type="primary", width='stretch', key="rt_update_preset_btn"):
                             filters_dict = {
                                 "rt_filter_project": st.session_state.get("rt_filter_project", []),
                                 "rt_filter_status": st.session_state.get("rt_filter_status", []),
@@ -2447,7 +2621,7 @@ def render_response_times_content():
                                 st.session_state.rt_active_preset_json = new_json
                                 st.toast("✅ Το Preview ενημερώθηκε επιτυχώς!")
                     with col_reload:
-                        if st.button("🔄 Επαναφορά", type="secondary", use_container_width=True, key="rt_reload_preset_btn"):
+                        if st.button("🔄 Επαναφορά", type="secondary", width='stretch', key="rt_reload_preset_btn"):
                             if "rt_active_preset_json" in st.session_state:
                                 import json
                                 filters = json.loads(st.session_state.rt_active_preset_json)
@@ -2459,33 +2633,34 @@ def render_response_times_content():
                                 st.toast("🔄 Τα αρχικά φίλτρα του Preview επαναφέρθηκαν!")
                                 st.rerun()
                     with col_close:
-                        if st.button("❌ Κλείσιμο", type="secondary", use_container_width=True, key="rt_close_preset_btn"):
-                            if "rt_active_preset_name" in st.session_state:
-                                del st.session_state["rt_active_preset_name"]
-                            if "rt_active_preset_json" in st.session_state:
-                                del st.session_state["rt_active_preset_json"]
-                            st.rerun()
+                        if st.button("❌ Κλείσιμο", type="secondary", width='stretch', key="rt_close_preset_btn"):
+                            clear_keys_and_rerun(["rt_active_preset_name", "rt_active_preset_json"])
 
                     st.markdown("---")
                     all_users = load_all_active_users()
                     other_users = [u for u in all_users if u["UserID"] != st.session_state.user_id]
                     other_user_names = [u["Username"] for u in other_users]
                     
-                    st.markdown("**Κοινοποίηση σε άλλον χρήστη:**")
-                    share_with = st.selectbox("Επιλέξτε Χρήστη", options=["-- Επιλογή --"] + other_user_names, key="rt_preset_share_user_select")
-                    if st.button("Κοινοποίηση", type="secondary", use_container_width=True, key="rt_preset_share_btn"):
-                        if share_with != "-- Επιλογή --":
-                            target_user = next(u for u in other_users if u["Username"] == share_with)
+                    st.markdown("**Κοινοποίηση σε χρήστες:**")
+                    share_with = st.multiselect("Επιλέξτε Χρήστες", options=other_user_names, key="rt_preset_share_users_select")
+                    if st.button("Κοινοποίηση", type="secondary", width='stretch', key="rt_preset_share_btn"):
+                        if share_with:
                             shared_name = f"{rt_active_preset_name} (Shared by {st.session_state.username})"
-                            if save_user_preset(target_user["UserID"], shared_name, st.session_state.rt_active_preset_json):
-                                st.success(f"Κοινοποιήθηκε στον χρήστη {share_with}!")
+                            success_users = []
+                            for username in share_with:
+                                target_user = next((u for u in other_users if u["Username"] == username), None)
+                                if target_user:
+                                    if save_user_preset(target_user["UserID"], shared_name, st.session_state.rt_active_preset_json):
+                                        success_users.append(username)
+                            if success_users:
+                                st.success(f"Κοινοποιήθηκε επιτυχώς στους χρήστες: {', '.join(success_users)}!")
 
         # 1. Filters Grid
         with st.expander("🔍 Φίλτρα Αναζήτησης KPIs", expanded=False):
             # Clear button row (Commented out per user request)
             # col_btn_space, col_reset = st.columns([3, 1])
             # with col_reset:
-            #     if st.button("🔄 Καθαρισμός Φίλτρων KPIs", type="secondary", use_container_width=True, key="rt_clear_filters_btn"):
+            #     if st.button("🔄 Καθαρισμός Φίλτρων KPIs", type="secondary", width='stretch', key="rt_clear_filters_btn"):
             #         rt_filter_keys = [
             #             "rt_filter_project",
             #             "rt_filter_status",
@@ -2552,10 +2727,16 @@ def render_response_times_content():
                 if not selected_customers: selected_customers = all_customers
 
         # Parse Date Range
-        if isinstance(date_range, tuple) and len(date_range) == 2:
+        if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
             start_date, end_date = date_range
+        elif isinstance(date_range, (list, tuple)) and len(date_range) == 1:
+            start_date = date_range[0]
+            end_date = start_date
+        elif isinstance(date_range, (list, tuple)) and len(date_range) == 0:
+            start_date = datetime.now().date()
+            end_date = start_date
         else:
-            start_date = date_range[0] if (isinstance(date_range, list) or isinstance(date_range, tuple)) and len(date_range) > 0 else datetime.now().date()
+            start_date = date_range
             end_date = start_date
 
         # Apply Filters
@@ -2578,22 +2759,23 @@ def render_response_times_content():
             # 2. KPI Summary
             st.write("<br>", unsafe_allow_html=True)
             st.subheader("📊 KPI Summary")
-            col1, col2, col3, col4, col5, col6 = st.columns(6)
+            col1, col2, col3, col4 = st.columns(4)
 
             col1.metric("Total Tickets", len(filtered_rt_df))
-            col2.metric("Creation->FirstInternalResponse", rt_safe_mean(filtered_rt_df["Creation->FirstInternalResponse"]))
-            col3.metric("Creation->FirstExternalResponse", rt_safe_mean(filtered_rt_df["Creation->FirstExternalResponse"]))
-            col4.metric("Internal Resp → Closed", rt_safe_mean(filtered_rt_df["FirstInternalResponse->Closed"]))
-            col5.metric("External Resp → Closed", rt_safe_mean(filtered_rt_df["FirstExternalResponse->Closed"]))
-            col6.metric("Creation → Closed", rt_safe_mean(filtered_rt_df["Creation->Closed"]))
+            col2.metric("Creation->FirstExternalResponse", rt_safe_mean(filtered_rt_df["Creation->FirstExternalResponse"]))
+            col3.metric("External Resp → Closed", rt_safe_mean(filtered_rt_df["FirstExternalResponse->Closed"]))
+            col4.metric("Creation → Closed", rt_safe_mean(filtered_rt_df["Creation->Closed"]))
 
-            # Old metrics kept in comments as requested:
-            # col2.metric("Creation → Assigned (days)", rt_safe_mean(filtered_rt_df["Creation->Assigned"]))
-            # col3.metric("Creation → First Response (days)", rt_safe_mean(filtered_rt_df["Creation->FirstResponse"]))
-            # col4.metric("Assigned → First Response (days)", rt_safe_mean(filtered_rt_df["Assigned->FirstResponse"]))
-            # col5.metric("Assigned → Closed (days)", rt_safe_mean(filtered_rt_df["Assigned->Closed"]))
+            # Old / Hidden metrics kept in comments as requested:
+            # col_hidden1.metric("Creation → Assigned (days)", rt_safe_mean(filtered_rt_df["Creation->Assigned"]))
+            # col_hidden2.metric("Creation → First Response (days)", rt_safe_mean(filtered_rt_df["Creation->FirstResponse"]))
+            # col_hidden3.metric("Assigned → First Response (days)", rt_safe_mean(filtered_rt_df["Assigned->FirstResponse"]))
+            # col_hidden4.metric("Assigned → Closed (days)", rt_safe_mean(filtered_rt_df["Assigned->Closed"]))
+            # col_hidden5.metric("Creation->FirstInternalResponse", rt_safe_mean(filtered_rt_df["Creation->FirstInternalResponse"]))
+            # col_hidden6.metric("Internal Resp → Closed", rt_safe_mean(filtered_rt_df["FirstInternalResponse->Closed"]))
 
             st.markdown("---")
+            st.info("ℹ️ **Σημείωση SLA**: Αυτή τη στιγμή οι χρόνοι προβάλλονται σε SLA 24ωρου. Για να υπολογιστεί το σωστό SLA (Δευτέρα - Παρασκευή 9πμ - 5μμ) θα πρέπει οι μέσοι χρόνοι να διαιρεθούν με το 3.")
 
             # 3. Group By Selection
             group_options = ["Project", "AssigneeName", "Status", "SubCategory", "PartnerName", "CustomerName", "Components"]
@@ -2607,9 +2789,9 @@ def render_response_times_content():
                     # "Creation->FirstResponse": "mean",
                     # "Assigned->FirstResponse": "mean",
                     # "Assigned->Closed": "mean",
-                    "Creation->FirstInternalResponse": "mean",
+                    # "Creation->FirstInternalResponse": "mean",
                     "Creation->FirstExternalResponse": "mean",
-                    "FirstInternalResponse->Closed": "mean",
+                    # "FirstInternalResponse->Closed": "mean",
                     "FirstExternalResponse->Closed": "mean",
                     "Creation->Closed": "mean"
                 }
@@ -2622,9 +2804,9 @@ def render_response_times_content():
                     # "Creation->FirstResponse": "Creation → First Response (Mean Days)",
                     # "Assigned->FirstResponse": "Assigned → First Response (Mean Days)",
                     # "Assigned->Closed": "Assigned → Closed (Mean Days)",
-                    "Creation->FirstInternalResponse": "Creation->FirstInternalResponse (Mean Days)",
+                    # "Creation->FirstInternalResponse": "Creation->FirstInternalResponse (Mean Days)",
                     "Creation->FirstExternalResponse": "Creation->FirstExternalResponse (Mean Days)",
-                    "FirstInternalResponse->Closed": "Internal Resp → Closed (Mean Days)",
+                    # "FirstInternalResponse->Closed": "Internal Resp → Closed (Mean Days)",
                     "FirstExternalResponse->Closed": "External Resp → Closed (Mean Days)",
                     "Creation->Closed": "Creation → Closed (Mean Days)"
                 })
@@ -2632,7 +2814,7 @@ def render_response_times_content():
                 st.subheader("📊 KPIs Grouped Summary")
                 st.dataframe(
                     grouped_df,
-                    use_container_width=True,
+                    width='stretch',
                     height=400,
                     column_config={
                         "Total Tickets": st.column_config.NumberColumn("Total Tickets", format="%d"),
@@ -2640,9 +2822,9 @@ def render_response_times_content():
                         # "Creation → First Response (Mean Days)": st.column_config.NumberColumn("Creation → First Response (Avg Days)", format="%.2f"),
                         # "Assigned → First Response (Mean Days)": st.column_config.NumberColumn("Assigned → First Response (Avg Days)", format="%.2f"),
                         # "Assigned → Closed (Mean Days)": st.column_config.NumberColumn("Assigned → Closed (Avg Days)", format="%.2f"),
-                        "Creation->FirstInternalResponse (Mean Days)": st.column_config.NumberColumn("Creation->FirstInternalResponse (Avg Days)", format="%.2f"),
+                        # "Creation->FirstInternalResponse (Mean Days)": st.column_config.NumberColumn("Creation->FirstInternalResponse (Avg Days)", format="%.2f"),
                         "Creation->FirstExternalResponse (Mean Days)": st.column_config.NumberColumn("Creation->FirstExternalResponse (Avg Days)", format="%.2f"),
-                        "Internal Resp → Closed (Mean Days)": st.column_config.NumberColumn("Internal Resp → Closed (Avg Days)", format="%.2f"),
+                        # "Internal Resp → Closed (Mean Days)": st.column_config.NumberColumn("Internal Resp → Closed (Avg Days)", format="%.2f"),
                         "External Resp → Closed (Mean Days)": st.column_config.NumberColumn("External Resp → Closed (Avg Days)", format="%.2f"),
                         "Creation → Closed (Mean Days)": st.column_config.NumberColumn("Creation → Closed (Avg Days)", format="%.2f"),
                     }
@@ -2665,16 +2847,16 @@ def render_response_times_content():
                     "PartnerName", "CustomerName", "Status", "SubCategory", "CreationDate", 
                     "FirstAssignedDate", 
                     # "FirstResponseDate",
-                    "FirstInternalResponseDate",
+                    # "FirstInternalResponseDate",
                     "FirstExternalResponseDate",
                     "ClosedDate",
                     # "Creation->Assigned",
                     # "Creation->FirstResponse",
                     # "Assigned->FirstResponse",
                     # "Assigned->Closed",
-                    "Creation->FirstInternalResponse",
+                    # "Creation->FirstInternalResponse",
                     "Creation->FirstExternalResponse",
-                    "FirstInternalResponse->Closed",
+                    # "FirstInternalResponse->Closed",
                     "FirstExternalResponse->Closed",
                     "Creation->Closed"
                 ]
@@ -2684,7 +2866,7 @@ def render_response_times_content():
                 st.subheader("📊 KPIs by Issue")
                 st.dataframe(
                     display_df,
-                    use_container_width=True,
+                    width='stretch',
                     height=500,
                     column_config={
                         "ProjectId": st.column_config.NumberColumn("Project ID", width=90, format="%d"),
@@ -2701,16 +2883,16 @@ def render_response_times_content():
                         "CreationDate": st.column_config.DatetimeColumn("Creation Date", width=160, format="DD/MM/YYYY HH:mm"),
                         "FirstAssignedDate": st.column_config.DatetimeColumn("First Assigned Date", width=160, format="DD/MM/YYYY HH:mm"),
                         # "FirstResponseDate": st.column_config.DatetimeColumn("First Response Date", width=160, format="DD/MM/YYYY HH:mm"),
-                        "FirstInternalResponseDate": st.column_config.DatetimeColumn("First Internal Response", width=160, format="DD/MM/YYYY HH:mm"),
+                        # "FirstInternalResponseDate": st.column_config.DatetimeColumn("First Internal Response", width=160, format="DD/MM/YYYY HH:mm"),
                         "FirstExternalResponseDate": st.column_config.DatetimeColumn("First External Response", width=160, format="DD/MM/YYYY HH:mm"),
                         "ClosedDate": st.column_config.DatetimeColumn("Closed Date", width=160, format="DD/MM/YYYY HH:mm"),
                         # "Creation->Assigned": st.column_config.NumberColumn("Creation → Assigned (Days)", width=240, format="%.2f"),
                         # "Creation->FirstResponse": st.column_config.NumberColumn("Creation → First Response (Days)", width=240, format="%.2f"),
                         # "Assigned->FirstResponse": st.column_config.NumberColumn("Assigned → First Response (Days)", width=240, format="%.2f"),
                         # "Assigned->Closed": st.column_config.NumberColumn("Assigned → Closed (Days)", width=240, format="%.2f"),
-                        "Creation->FirstInternalResponse": st.column_config.NumberColumn("Creation->FirstInternalResponse (Days)", width=220, format="%.2f"),
+                        # "Creation->FirstInternalResponse": st.column_config.NumberColumn("Creation->FirstInternalResponse (Days)", width=220, format="%.2f"),
                         "Creation->FirstExternalResponse": st.column_config.NumberColumn("Creation->FirstExternalResponse (Days)", width=220, format="%.2f"),
-                        "FirstInternalResponse->Closed": st.column_config.NumberColumn("Internal Resp → Closed (Days)", width=220, format="%.2f"),
+                        # "FirstInternalResponse->Closed": st.column_config.NumberColumn("Internal Resp → Closed (Days)", width=220, format="%.2f"),
                         "FirstExternalResponse->Closed": st.column_config.NumberColumn("External Resp → Closed (Days)", width=220, format="%.2f"),
                         "Creation->Closed": st.column_config.NumberColumn("Creation → Closed (Days)", width=220, format="%.2f"),
                     }
@@ -2737,21 +2919,23 @@ def render_response_times_content():
             (rt_df["FirstInternalResponse->Closed"] < 0) |
             (rt_df["FirstExternalResponse->Closed"] < 0) |
             (rt_df["Creation->Closed"] < 0)
-        ][["IssueKey", "JiraLink", "Status", "CreationDate", "FirstAssignedDate", "FirstInternalResponseDate", "FirstExternalResponseDate", "ClosedDate"]].copy()
+        ][["IssueKey", "JiraLink", "Status", "CreationDate", "FirstAssignedDate", 
+           # "FirstInternalResponseDate", 
+           "FirstExternalResponseDate", "ClosedDate"]].copy()
 
         with st.expander("⚠️ Πίνακας Ελέγχου Δεδομένων (Λάθη Χρηστών)", expanded=False):
             st.warning(f"Βρέθηκαν {len(errors_df)} tickets με αρνητικούς χρόνους λόγω λάθος καταχώρησης ημερομηνιών στο Jira.")
             if not errors_df.empty:
                 st.dataframe(
                     errors_df,
-                    use_container_width=True,
+                    width='stretch',
                     column_config={
                         "IssueKey": st.column_config.TextColumn("Ticket Key", width=110),
                         "JiraLink": st.column_config.LinkColumn("Jira", width=110, display_text="Open Ticket"),
                         "Status": st.column_config.TextColumn("Status", width=110),
                         "CreationDate": st.column_config.DatetimeColumn("Creation Date", width=160, format="DD/MM/YYYY HH:mm"),
                         "FirstAssignedDate": st.column_config.DatetimeColumn("First Assigned Date", width=160, format="DD/MM/YYYY HH:mm"),
-                        "FirstInternalResponseDate": st.column_config.DatetimeColumn("First Internal Response", width=160, format="DD/MM/YYYY HH:mm"),
+                        # "FirstInternalResponseDate": st.column_config.DatetimeColumn("First Internal Response", width=160, format="DD/MM/YYYY HH:mm"),
                         "FirstExternalResponseDate": st.column_config.DatetimeColumn("First External Response", width=160, format="DD/MM/YYYY HH:mm"),
                         "ClosedDate": st.column_config.DatetimeColumn("Closed Date", width=160, format="DD/MM/YYYY HH:mm")
                     }
@@ -2759,12 +2943,59 @@ def render_response_times_content():
             else:
                 st.success("Όλα καθαρά! Δεν βρέθηκαν λάθη στις ημερομηνίες.")
 
+def render_markdown_with_mermaid(file_path):
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            
+            import streamlit.components.v1 as components
+            
+            # Split content into markdown parts and mermaid diagram parts
+            pattern = r"```mermaid\s*\n(.*?)\n```"
+            parts = re.split(pattern, content, flags=re.DOTALL)
+            
+            for i, part in enumerate(parts):
+                if i % 2 == 0:
+                    # Markdown part
+                    if part.strip():
+                        st.markdown(part, unsafe_allow_html=True)
+                else:
+                    # Mermaid part
+                    mermaid_code = part.strip()
+                    num_lines = len(mermaid_code.splitlines())
+                    height = max(150, num_lines * 45)
+                    
+                    html_code = f"""
+                    <div class="mermaid" style="display: flex; justify-content: center; align-items: center;">
+                    {mermaid_code}
+                    </div>
+                    <script type="module">
+                        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+                        mermaid.initialize({{ 
+                            startOnLoad: true,
+                            theme: 'default',
+                            securityLevel: 'loose'
+                        }});
+                    </script>
+                    """
+                    components.html(html_code, height=height, scrolling=True)
+        except Exception as e:
+            st.error(f"Σφάλμα κατά την ανάγνωση ή εμφάνιση του αρχείου {file_path}: {str(e)}")
+    else:
+        st.error(f"Το αρχείο {file_path} δεν βρέθηκε.")
+
 def render_etl_manager_content():
     st.subheader("🚀 Data Warehouse ETL Manager", divider="blue")
     st.markdown("Διαχειριστικό περιβάλλον για τον συγχρονισμό δεδομένων από Gemini και Jira στο SQL Server.")
 
     # Δημιουργία Tabs (Καρτέλες) μέσα στο κυρίως Tab του μενού
-    tab_actions, tab_full_sync = st.tabs(["⚡ Μεμονωμένες Ενέργειες", "📦 Μαζικός Συγχρονισμός"])
+    tab_actions, tab_full_sync, tab_jira_full_sync, tab_dev_docs = st.tabs([
+        "⚡ Μεμονωμένες Ενέργειες", 
+        "📦 Μαζικός Συγχρονισμός", 
+        "🎫 Jira Full Sync (Από Μηδέν)",
+        "📖 Dev Docs"
+    ])
 
     with tab_actions:
         st.write("Συγχρονισμός ανά Οντότητα (Dimensions & Facts)")
@@ -2772,7 +3003,7 @@ def render_etl_manager_content():
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            if st.button("🏢 Sync Projects", use_container_width=True):
+            if st.button("🏢 Sync Projects", width='stretch'):
                 with st.spinner("Συγχρονισμός Projects σε εξέλιξη..."):
                     run_real_projects_etl()
                     run_jira_projects_etl()
@@ -2784,7 +3015,7 @@ def render_etl_manager_content():
                 st.success("Τα Projects συγχρονίστηκαν επιτυχώς!")
 
         with col2:
-            if st.button("👥 Sync Users", use_container_width=True):
+            if st.button("👥 Sync Users", width='stretch'):
                 with st.spinner("Συγχρονισμός Users σε εξέλιξη..."):
                     run_users_etl()
                     run_jira_users_etl()
@@ -2796,7 +3027,7 @@ def render_etl_manager_content():
                 st.success("Οι Users συγχρονίστηκαν επιτυχώς!")
 
         with col3:
-            if st.button("🧩 Sync Components", use_container_width=True):
+            if st.button("🧩 Sync Components", width='stretch'):
                 with st.spinner("Συγχρονισμός Components σε εξέλιξη..."):
                     run_components_etl()
                     run_jira_components_etl()
@@ -2808,7 +3039,7 @@ def render_etl_manager_content():
                 st.success("Τα Components συγχρονίστηκαν επιτυχώς!")
 
         with col4:
-            if st.button("🎫 Sync Issues", use_container_width=True, type="primary"):
+            if st.button("🎫 Sync Issues", width='stretch', type="primary"):
                 with st.spinner("Incremental Sync (Issues, Comments, Worklogs) σε εξέλιξη..."):
                     run_incremental_issues_and_children_etl()
                     run_incremental_jira_etl()
@@ -2854,6 +3085,53 @@ def render_etl_manager_content():
                 f"Εκτέλεση Full Sync Pipeline. Ολοκληρώθηκε επιτυχώς σε {mins}λ και {secs}δ."
             )
             st.success(f"🎉 Όλα τα δεδομένα συγχρονίστηκαν επιτυχώς σε {mins} λεπτά και {secs} δευτερόλεπτα!")
+
+    with tab_jira_full_sync:
+        st.write("Πλήρης Συγχρονισμός Jira (Από Μηδέν)")
+        st.info("Συγχρονίζει μόνο τις Jira οντότητες (Projects ➔ Users ➔ Components ➔ Issues) από το μηδέν, αγνοώντας την ημερομηνία τελευταίου συγχρονισμού.")
+        
+        if st.button("🚀 ΕΚΚΙΝΗΣΗ JIRA FULL SYNC", type="primary", key="jira_full_sync_btn"):
+            start_time = time.time()
+            
+            with st.status("Εκτέλεση Jira Full Sync Pipeline...", expanded=True) as status:
+                st.write("Συγχρονισμός Jira Projects...")
+                run_jira_projects_etl()
+                
+                st.write("Συγχρονισμός Jira Users...")
+                run_jira_users_etl()
+                
+                st.write("Συγχρονισμός Jira Components...")
+                run_jira_components_etl()
+                
+                st.write("Συγχρονισμός Jira Issues (Από Μηδέν)...")
+                run_incremental_jira_etl(ignore_last_sync=True)
+                
+                status.update(label="Ο Jira Full Συγχρονισμός Ολοκληρώθηκε!", state="complete", expanded=False)
+                
+            end_time = time.time()
+            mins, secs = divmod(int(end_time - start_time), 60)
+            
+            write_system_log(
+                st.session_state.user_id, 
+                "ETL_JIRA_FULL_SYNC", 
+                f"Εκτέλεση Jira Full Sync Pipeline (ignore_last_sync = True). Ολοκληρώθηκε επιτυχώς σε {mins}λ και {secs}δ."
+            )
+            st.success(f"🎉 Όλα τα δεδομένα Jira συγχρονίστηκαν επιτυχώς από το μηδέν σε {mins} λεπτά και {secs} δευτερόλεπτα!")
+
+    with tab_dev_docs:
+        doc_choice = st.radio(
+            "Επιλογή Εγγράφου Τεκμηρίωσης:", 
+            ["📊 Dashboard & ETL Pipeline", "⚙️ Database Sync (sync_db.py)"], 
+            horizontal=True
+        )
+        st.markdown("---")
+        
+        if doc_choice == "📊 Dashboard & ETL Pipeline":
+            render_markdown_with_mermaid("DEVELOPER_DOCS.md")
+        else:
+            render_markdown_with_mermaid("sync_db_docs.md")
+
+
 
 def render_manual_content():
     st.subheader("📖 Οδηγίες Χρήσης NSS Timesheet Dashboard", divider="blue")
@@ -3014,4 +3292,5 @@ st.session_state["widget_backup"] = {
     "rt_active_preset_name": st.session_state.get("rt_active_preset_name"),
     "rt_active_preset_json": st.session_state.get("rt_active_preset_json"),
     "rt_group_key": st.session_state.get("rt_group_key"),
+    "active_app_view": st.session_state.get("active_app_view"),
 }

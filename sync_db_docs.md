@@ -84,7 +84,29 @@ CREATE TABLE WorkLogs (
 );
 ```
 
+## 🗄️ Σχήμα Βάσης Dashboard & System (NSSTimesheetApp DB)
+
+Οι πίνακες συστήματος και ρυθμίσεων της εφαρμογής **NSSTimesheetApp** (διαχείριση χρηστών, presets, ομάδων, sessions, κλπ.) είναι οι εξής:
+
+* **`Users`**: Αποθηκεύει τα στοιχεία των εγγεγραμμένων χρηστών του dashboard.
+  * *Στήλες*: `Username`, `PasswordHash`, `Email`, `DisplayName`, `DefaultProject`, `AppPreferences`, `IsActive`.
+* **`User_Presets`**: Αποθηκεύει τα αποθηκευμένα φίλτρα (Saved Previews) των χρηστών.
+  * *Στήλες*: `PresetID` (PK), `UserID`, `PresetName`, `FiltersJSON`, `IsDefault`, `TypeKeyword`.
+* **`User_Groups`**: Ομάδες χρηστών (Teams).
+  * *Στήλες*: `GroupID` (PK), `GroupName`.
+* **`User_Group_Memberships`**: Συσχετίσεις χρηστών με ομάδες.
+  * *Στήλες*: `MembershipID` (PK), `GroupID` (FK), `UserID`.
+* **`UserSessions`**: Ενεργά sessions χρηστών για αυθεντικοποίηση.
+  * *Στήλες*: `SessionToken` (PK), `UserID` (FK), `ExpiresAt`, `CreatedAt`.
+* **`ContentHub`**: Αποθηκεύει τις Ανακοινώσεις και τα Pro Tips.
+  * *Στήλες*: `ContentID` (PK), `ContentType` ('Announcement'/'ProTip'), `Title`, `BodyText`, `CreatedDate`, `AuthorID`, `TargetApps`.
+* **`KBArticles`**: Άρθρα της εσωτερικής βάσης γνώσης (Knowledge Base).
+  * *Στήλες*: `ArticleID` (PK), `Title`, `Category`, `ContentBody`, `CreatedDate`, `AuthorID`, `TargetApps`, `IsActive`.
+* **`SystemLogs`**: Καταγραφή ενεργειών των χρηστών (Auditing).
+  * *Στήλες*: `LogID` (PK), `UserID` (FK), `ActionType`, `ActionDetails`, `CreatedDate`.
+
 ---
+
 
 ## 📊 Μεταδεδομένα Συγχρονισμού (Sync_Metadata)
 

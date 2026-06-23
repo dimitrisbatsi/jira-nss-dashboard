@@ -1,0 +1,74 @@
+373:         st.error(f"Σφάλμα αποθήκευσης preview: {e}")
+389:         st.error(f"Σφάλμα ενημέρωσης preview: {e}")
+480:         st.error(f"Σφάλμα εφαρμογής preview: {e}")
+1319:     # --- 💾 Saved Previews Section ---
+1322:         expander_title = "💾 Saved Previews (Presets) - Timesheet"
+1332:                 if val and val != "-- Επιλέξτε Preview --":
+1360:                             st.toast("✅ Το Preview φορτώθηκε επιτυχώς!")
+1362:                             st.error(f"Σφάλμα κατά τη φόρτωση του preview: {e}")
+1363:                 st.session_state.ts_preset_select_widget = "-- Επιλέξτε Preview --"
+1365:             preset_names = ["-- Επιλέξτε Preview --"] + [
+1370:                 "Φόρτωση Preview", 
+1377:             new_preset_name = st.text_input("Όνομα νέου Preview", placeholder="π.χ. My Support Group", key="ts_new_preset_name")
+1393:                         st.toast("✅ Το Preview αποθηκεύτηκε!")
+1401:                 st.markdown(f"📂 **Ενεργό Preview:** `{active_preset_name}`")
+1407:                     st.markdown("⭐ **Προεπιλεγμένο Preview (αυτόματο)**")
+1411:                             st.toast("✅ Ορίστηκε ως προεπιλεγμένο preview!")
+1432:                             st.toast("✅ Το Preview ενημερώθηκε επιτυχώς!")
+1437:                             st.toast("🔄 Τα αρχικά φίλτρα του Preview επαναφέρθηκαν!")
+1440:                     if st.button("❌ Κλείσιμο", type="secondary", use_container_width=True, key="ts_close_preset_btn"):
+2327:                         st.session_state.rt_active_preset_name = default_preset["PresetName"]
+2328:                         st.session_state.rt_active_preset_json = default_preset["FiltersJSON"]
+2350:         # Saved Previews section (only visible if logged in)
+2352:             rt_active_preset_name = st.session_state.get("rt_active_preset_name")
+2353:             rt_expander_title = "💾 Saved Previews (Presets) - Χρόνοι Απόκρισης"
+2354:             if rt_active_preset_name:
+2355:                 rt_expander_title += f" (Ενεργό: {rt_active_preset_name})"
+2363:                     if val and val != "-- Επιλέξτε Preview --":
+2375:                                 st.session_state.rt_active_preset_name = selected_preset["PresetName"]
+2376:                                 st.session_state.rt_active_preset_json = selected_preset["FiltersJSON"]
+2377:                                 st.toast("✅ Το Preview φορτώθηκε επιτυχώς!")
+2379:                                 st.error(f"Σφάλμα κατά τη φόρτωση του preview: {e}")
+2380:                     st.session_state.rt_preset_select_widget = "-- Επιλέξτε Preview --"
+2382:                 preset_names = ["-- Επιλέξτε Preview --"] + [
+2388:                     "Φόρτωση Preview", 
+2395:                 new_preset_name = st.text_input("Όνομα νέου Preview (Χρόνοι Απόκρισης)", placeholder="π.χ. Epic Support KPIs", key="rt_new_preset_name")
+2410:                             st.toast("✅ Το Preview αποθηκεύτηκε!")
+2415:                 rt_active_preset_name = st.session_state.get("rt_active_preset_name")
+2416:                 if rt_active_preset_name:
+2418:                     st.markdown(f"📂 **Ενεργό Preview:** `{rt_active_preset_name}`")
+2420:                     active_preset = next((p for p in rt_presets if p["PresetName"] == rt_active_preset_name), None)
+2424:                         st.markdown("⭐ **Προεπιλεγμένο Preview (αυτόματο)**")
+2427:                             if set_preset_as_default(st.session_state.user_id, rt_active_preset_name, "rt_filter_project"):
+2428:                                 st.toast("✅ Ορίστηκε ως προεπιλεγμένο preview!")
+2446:                             if update_user_preset(st.session_state.user_id, rt_active_preset_name, new_json):
+2447:                                 st.session_state.rt_active_preset_json = new_json
+2448:                                 st.toast("✅ Το Preview ενημερώθηκε επιτυχώς!")
+2451:                             if "rt_active_preset_json" in st.session_state:
+2453:                                 filters = json.loads(st.session_state.rt_active_preset_json)
+2459:                                 st.toast("🔄 Τα αρχικά φίλτρα του Preview επαναφέρθηκαν!")
+2462:                         if st.button("❌ Κλείσιμο", type="secondary", use_container_width=True, key="rt_close_preset_btn"):
+2463:                             if "rt_active_preset_name" in st.session_state:
+2464:                                 del st.session_state["rt_active_preset_name"]
+2465:                             if "rt_active_preset_json" in st.session_state:
+2466:                                 del st.session_state["rt_active_preset_json"]
+2479:                             shared_name = f"{rt_active_preset_name} (Shared by {st.session_state.username})"
+2480:                             if save_user_preset(target_user["UserID"], shared_name, st.session_state.rt_active_preset_json):
+2498:             #             "rt_active_preset_name",
+2499:             #             "rt_active_preset_json",
+2872:         "Εδώ θα βρείτε αναλυτικές οδηγίες για τη χρήση των φίλτρων, των Previews (αποθηκευμένων φίλτρων), "
+2890:     # expander 2: Saved Previews
+2891:     with st.expander("💾 2. Αποθηκευμένα Previews (Φίλτρα)"):
+2893:         **Σημαντικό:** Για να χρησιμοποιήσετε τα **Previews (Presets)**, πρέπει να είστε **συνδεδεμένος χρήστης** (Soft Login).
+2895:         Τα Previews σάς επιτρέπουν να αποθηκεύετε σύνθετους συνδυασμούς φίλτρων στη βάση δεδομένων για να τους φορτώνετε άμεσα χωρίς να τους επιλέγετε χειροκίνητα κάθε φορά:
+2896:         1. **Αποθήκευση νέου Preview**:
+2898:            - Στην ενότητα **Saved Previews**, πληκτρολογήστε ένα όνομα (π.χ. *My Support Group*) και πατήστε **Αποθήκευση Τρέχοντος Φίλτρου**.
+2899:         2. **Φόρτωση Preview**:
+2900:            - Επιλέξτε το Preview από τη λίστα **Φόρτωση Preview**. Τα φίλτρα θα εφαρμοστούν αμέσως στην οθόνη.
+2902:            - Όταν ένα Preview είναι ενεργό, μπορείτε να αλλάξετε τα φίλτρα στο Sidebar και να πατήσετε **Ενημέρωση** για να αποθηκεύσετε τις νέες επιλογές στο ίδιο όνομα.
+2904:            - Μπορείτε να μοιραστείτε το ενεργό Preview σας με έναν άλλον ενεργό χρήστη, επιλέγοντας το όνομά του και πατώντας **Κοινοποίηση**. Το Preview θα εμφανιστεί αυτόματα στη δική του λίστα!
+2906:            - Μαζί με τα φίλτρα αναζήτησης, το Preview αποθηκεύει και την τρέχουσα επιλογή ομαδοποίησης (Group By), ώστε ο πίνακας να εμφανίζεται ακριβώς όπως τον διαμορφώσατε.
+2908:            - Μπορείτε να ορίσετε ένα Preview ως προεπιλεγμένο πατώντας **⭐ Ορισμός ως Προεπιλογή**. Το συγκεκριμένο Preview θα φορτώνει αυτόματα κάθε φορά που ανοίγετε την εφαρμογή.
+2914:         * **Soft Login**: Παρέχει πρόσβαση στις προηγμένες δυνατότητες (Previews, Προφίλ, Διαχείριση Ομάδων, Knowledge Base). Η εφαρμογή παραμένει δημόσια για ανάγνωση (read-only) για επισκέπτες που δεν επιθυμούν να συνδεθούν.
+3023:     "rt_active_preset_name": st.session_state.get("rt_active_preset_name"),
+3024:     "rt_active_preset_json": st.session_state.get("rt_active_preset_json"),
