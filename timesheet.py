@@ -18,7 +18,7 @@ from modules.test_users_etl import run_users_etl, run_jira_users_etl
 from modules.test_components_etl import run_components_etl, run_jira_components_etl
 from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl
 
-APP_VERSION = "26.5.5 (2026-06-24)"
+APP_VERSION = "26.5.5b (2026-06-24)"
 
 # --- Helper functions for state updates ---
 def on_only_me_click(username):
@@ -3163,17 +3163,25 @@ def run_etl_subprocess_statement(statement_str, description):
     log_lines = []
     
     # Run the Python interpreter as a subprocess with unbuffered output (-u)
+    # Read binary (text=False) to handle multi-encoding safe fallbacks on Windows
     process = subprocess.Popen(
         [sys.executable, "-u", "-c", statement_str],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
+        text=False,
         bufsize=1
     )
     
     # Stream output line-by-line
-    for line in iter(process.stdout.readline, ""):
+    for raw_line in iter(process.stdout.readline, b""):
+        try:
+            line = raw_line.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                line = raw_line.decode("cp1253")  # Greek Windows encoding fallback
+            except UnicodeDecodeError:
+                line = raw_line.decode("cp1252", errors="replace")  # ANSI fallback with replacement chars
+                
         log_lines.append(line)
         # Keep last 150 lines to prevent UI lag
         console_placeholder.code("".join(log_lines[-150:]))
