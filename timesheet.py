@@ -18,7 +18,7 @@ from modules.test_users_etl import run_users_etl, run_jira_users_etl
 from modules.test_components_etl import run_components_etl, run_jira_components_etl
 from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl
 
-APP_VERSION = "26.5.4 (2026-06-23)"
+APP_VERSION = "26.5.5 (2026-06-24)"
 
 # --- Helper functions for state updates ---
 def on_only_me_click(username):
@@ -31,6 +31,41 @@ def clear_keys_and_rerun(keys_to_clear):
         if "widget_backup" in st.session_state and k in st.session_state["widget_backup"]:
             st.session_state["widget_backup"][k] = None
     st.rerun()
+
+def get_business_days(start_ts, end_ts):
+    s = pd.to_datetime(start_ts, errors='coerce')
+    e = pd.to_datetime(end_ts, errors='coerce')
+    
+    def calculate_seconds(row):
+        start = row['start']
+        end = row['end']
+        if pd.isna(start) or pd.isna(end) or start >= end:
+            return 0.0
+        
+        # Support hours 09:00 - 17:00 (in seconds of the day)
+        day_start = 9 * 3600  # 09:00
+        day_end = 17 * 3600   # 17:00
+        
+        # Calculate for each day in range
+        dates = pd.date_range(start=start.normalize(), end=end.normalize())
+        total_seconds = 0
+        
+        for date in dates:
+            # Exclude weekends (Saturday and Sunday)
+            if date.weekday() >= 5: 
+                continue
+            
+            # Start/end bounds for business hours on this day
+            s_limit = max(start, date + pd.Timedelta(seconds=day_start))
+            e_limit = min(end, date + pd.Timedelta(seconds=day_end))
+            
+            if s_limit < e_limit:
+                total_seconds += (e_limit - s_limit).total_seconds()
+        
+        return total_seconds / 28800.0  # Divide by 8-hour workday (8 * 3600 seconds)
+        
+    temp_df = pd.DataFrame({'start': s, 'end': e})
+    return temp_df.apply(calculate_seconds, axis=1)
 
 def is_content_visible(target_apps_str):
     active_apps = st.session_state.get("active_app_view", ["Galaxy", "Pylon"])
@@ -1076,6 +1111,24 @@ def rt_load_first_assigned():
     FROM dbo.GAudit
     WHERE fieldname = 'Assignee'
       AND newvalue IS NOT NULL
+      AND SourceApp = 'Jira'
+    GROUP BY IssueID
+    """
+    try:
+        df_res = pd.read_sql(query, conn)
+        return df_res
+    finally:
+        conn.close()
+
+def rt_load_status_change_date():
+    conn = rt_get_connection()
+    query = """
+    SELECT 
+        IssueID,
+        MIN(Created) AS FirstInProgressDate
+    FROM dbo.GAudit
+    WHERE FieldName = 'status' 
+      AND (NewValue = 'In Progress' OR NewValue = 'In progress' OR NewValue = 'IN PROGRESS')
       AND SourceApp = 'Jira'
     GROUP BY IssueID
     """
@@ -2404,6 +2457,7 @@ def render_response_times_content():
                 df_issues = rt_load_from_db().rename(columns={"IssueId": "IssueID"})
                 df_comments = rt_load_first_response()
                 df_assigned = rt_load_first_assigned()
+                df_status = rt_load_status_change_date()
 
                 # Convert Dates
                 df_issues["CreationDate"] = pd.to_datetime(df_issues["CreationDate"])
@@ -2411,12 +2465,14 @@ def render_response_times_content():
                 df_comments["FirstInternalResponseDate"] = pd.to_datetime(df_comments["FirstInternalResponseDate"])
                 df_comments["FirstExternalResponseDate"] = pd.to_datetime(df_comments["FirstExternalResponseDate"])
                 df_assigned["FirstAssignedDate"] = pd.to_datetime(df_assigned["FirstAssignedDate"])
+                df_status["FirstInProgressDate"] = pd.to_datetime(df_status["FirstInProgressDate"])
 
                 # Merge All
                 rt_df = (
                     df_issues
                     .merge(df_assigned, on="IssueID", how="left")
                     .merge(df_comments, on="IssueID", how="left")
+                    .merge(df_status, on="IssueID", how="left")
                 )
 
                 rt_df["Project"] = rt_df["IssueKey"].astype(str).str.split("-").str[0]
@@ -2429,50 +2485,70 @@ def render_response_times_content():
                 rt_df["AssigneeName"] = rt_df["AssigneeName"].fillna("Unassigned").astype(str).str.strip()
 
                 # KPI Calculation
-                # (Old stats kept computed in DataFrame so we don't lose them)
-                rt_df["Creation->Assigned"] = (
-                    rt_df["FirstAssignedDate"] - rt_df["CreationDate"]
-                ).dt.total_seconds() / 86400
+                # (Old stats kept computed in DataFrame so we don't lose them - now kept commented out for reference)
+                # rt_df["Creation->Assigned"] = (
+                #     rt_df["FirstAssignedDate"] - rt_df["CreationDate"]
+                # ).dt.total_seconds() / 86400
+                rt_df["Creation->Assigned"] = get_business_days(rt_df["CreationDate"], rt_df["FirstAssignedDate"])
 
-                rt_df["Assigned->Closed"] = (
-                    rt_df["ClosedDate"] - rt_df["FirstAssignedDate"]
-                ).dt.total_seconds() / 86400
+                # rt_df["Assigned->Closed"] = (
+                #     rt_df["ClosedDate"] - rt_df["FirstAssignedDate"]
+                # ).dt.total_seconds() / 86400
+                rt_df["Assigned->Closed"] = get_business_days(rt_df["FirstAssignedDate"], rt_df["ClosedDate"])
 
-                rt_df["Creation->Closed"] = (
-                    rt_df["ClosedDate"] - rt_df["CreationDate"]
-                ).dt.total_seconds() / 86400
+                # rt_df["Creation->Closed"] = (
+                #     rt_df["ClosedDate"] - rt_df["CreationDate"]
+                # ).dt.total_seconds() / 86400
+                rt_df["Creation->Closed"] = get_business_days(rt_df["CreationDate"], rt_df["ClosedDate"])
+
+                # rt_df["Creation->InProgress"] = (
+                #     rt_df["FirstInProgressDate"] - rt_df["CreationDate"]
+                # ).dt.total_seconds() / 86400
+                rt_df["Creation->InProgress"] = get_business_days(rt_df["CreationDate"], rt_df["FirstInProgressDate"])
+
+                # rt_df["InProgress->Closed"] = (
+                #     rt_df["ClosedDate"] - rt_df["FirstInProgressDate"]
+                # ).dt.total_seconds() / 86400
+                rt_df["InProgress->Closed"] = get_business_days(rt_df["FirstInProgressDate"], rt_df["ClosedDate"])
 
                 # Dynamic overall FirstResponseDate (backward compatibility)
                 rt_df["FirstResponseDate"] = rt_df[["FirstInternalResponseDate", "FirstExternalResponseDate"]].min(axis=1)
                 
-                rt_df["Creation->FirstResponse"] = (
-                    rt_df["FirstResponseDate"] - rt_df["CreationDate"]
-                ).dt.total_seconds() / 86400
+                # rt_df["Creation->FirstResponse"] = (
+                #     rt_df["FirstResponseDate"] - rt_df["CreationDate"]
+                # ).dt.total_seconds() / 86400
+                rt_df["Creation->FirstResponse"] = get_business_days(rt_df["CreationDate"], rt_df["FirstResponseDate"])
 
-                rt_df["Assigned->FirstResponse"] = (
-                    rt_df["FirstResponseDate"] - rt_df["FirstAssignedDate"]
-                ).dt.total_seconds() / 86400
+                # rt_df["Assigned->FirstResponse"] = (
+                #     rt_df["FirstResponseDate"] - rt_df["FirstAssignedDate"]
+                # ).dt.total_seconds() / 86400
+                rt_df["Assigned->FirstResponse"] = get_business_days(rt_df["FirstAssignedDate"], rt_df["FirstResponseDate"])
 
                 # New split stats (Colleague's additions)
-                rt_df["Creation->FirstInternalResponse"] = (
-                    rt_df["FirstInternalResponseDate"] - rt_df["CreationDate"]
-                ).dt.total_seconds() / 86400
+                # rt_df["Creation->FirstInternalResponse"] = (
+                #     rt_df["FirstInternalResponseDate"] - rt_df["CreationDate"]
+                # ).dt.total_seconds() / 86400
+                rt_df["Creation->FirstInternalResponse"] = get_business_days(rt_df["CreationDate"], rt_df["FirstInternalResponseDate"])
 
-                rt_df["Creation->FirstExternalResponse"] = (
-                    rt_df["FirstExternalResponseDate"] - rt_df["CreationDate"]
-                ).dt.total_seconds() / 86400
+                # rt_df["Creation->FirstExternalResponse"] = (
+                #     rt_df["FirstExternalResponseDate"] - rt_df["CreationDate"]
+                # ).dt.total_seconds() / 86400
+                rt_df["Creation->FirstExternalResponse"] = get_business_days(rt_df["CreationDate"], rt_df["FirstExternalResponseDate"])
 
-                rt_df["Assigned->FirstInternalResponse"] = (
-                    rt_df["FirstInternalResponseDate"] - rt_df["FirstAssignedDate"]
-                ).dt.total_seconds() / 86400
+                # rt_df["Assigned->FirstInternalResponse"] = (
+                #     rt_df["FirstInternalResponseDate"] - rt_df["FirstAssignedDate"]
+                # ).dt.total_seconds() / 86400
+                rt_df["Assigned->FirstInternalResponse"] = get_business_days(rt_df["FirstAssignedDate"], rt_df["FirstInternalResponseDate"])
 
-                rt_df["FirstInternalResponse->Closed"] = (
-                    rt_df["ClosedDate"] - rt_df["FirstInternalResponseDate"]
-                ).dt.total_seconds() / 86400
+                # rt_df["FirstInternalResponse->Closed"] = (
+                #     rt_df["ClosedDate"] - rt_df["FirstInternalResponseDate"]
+                # ).dt.total_seconds() / 86400
+                rt_df["FirstInternalResponse->Closed"] = get_business_days(rt_df["FirstInternalResponseDate"], rt_df["ClosedDate"])
 
-                rt_df["FirstExternalResponse->Closed"] = (
-                    rt_df["ClosedDate"] - rt_df["FirstExternalResponseDate"]
-                ).dt.total_seconds() / 86400
+                # rt_df["FirstExternalResponse->Closed"] = (
+                #     rt_df["ClosedDate"] - rt_df["FirstExternalResponseDate"]
+                # ).dt.total_seconds() / 86400
+                rt_df["FirstExternalResponse->Closed"] = get_business_days(rt_df["FirstExternalResponseDate"], rt_df["ClosedDate"])
 
                 st.session_state.rt_df = rt_df
                 if "rt_filters_initialized" in st.session_state:
@@ -2494,7 +2570,7 @@ def render_response_times_content():
                     try:
                         filters = json.loads(default_preset["FiltersJSON"])
                         for k, v in filters.items():
-                            if k == "rt_filter_date":
+                            if k in ["rt_filter_date", "rt_filter_closed_date"]:
                                 st.session_state[k] = [pd.to_datetime(d).date() for d in v] if len(v) > 1 else pd.to_datetime(v[0]).date() if len(v) == 1 else datetime.now().date()
                             else:
                                 st.session_state[k] = v
@@ -2514,6 +2590,8 @@ def render_response_times_content():
                 last_day = calendar.monthrange(today.year, today.month)[1]
                 end_of_month = today.replace(day=last_day)
                 st.session_state["rt_filter_date"] = [start_of_month, end_of_month]
+                st.session_state["rt_use_closed_date"] = False
+                st.session_state["rt_filter_closed_date"] = [start_of_month, end_of_month]
                 st.session_state["rt_filter_assignee"] = sorted(rt_df["AssigneeName"].dropna().unique().tolist())
                 st.session_state["rt_filter_components"] = sorted(rt_df["Components"].dropna().unique().tolist())
                 st.session_state["rt_filter_partners"] = sorted(rt_df["PartnerName"].dropna().unique().tolist())
@@ -2542,7 +2620,7 @@ def render_response_times_content():
                             try:
                                 filters = json.loads(selected_preset["FiltersJSON"])
                                 for k, v in filters.items():
-                                    if k == "rt_filter_date":
+                                    if k in ["rt_filter_date", "rt_filter_closed_date"]:
                                         st.session_state[k] = [pd.to_datetime(d).date() for d in v] if len(v) > 1 else pd.to_datetime(v[0]).date() if len(v) == 1 else datetime.now().date()
                                     else:
                                         st.session_state[k] = v
@@ -2574,6 +2652,8 @@ def render_response_times_content():
                             "rt_filter_status": st.session_state.get("rt_filter_status", []),
                             "rt_filter_subcategory": st.session_state.get("rt_filter_subcategory", []),
                             "rt_filter_date": [str(d) for d in st.session_state.get("rt_filter_date", [])] if isinstance(st.session_state.get("rt_filter_date"), (list, tuple)) else [str(st.session_state.get("rt_filter_date"))] if st.session_state.get("rt_filter_date") else [],
+                            "rt_use_closed_date": st.session_state.get("rt_use_closed_date", False),
+                            "rt_filter_closed_date": [str(d) for d in st.session_state.get("rt_filter_closed_date", [])] if isinstance(st.session_state.get("rt_filter_closed_date"), (list, tuple)) else [str(st.session_state.get("rt_filter_closed_date"))] if st.session_state.get("rt_filter_closed_date") else [],
                             "rt_filter_assignee": st.session_state.get("rt_filter_assignee", []),
                             "rt_filter_components": st.session_state.get("rt_filter_components", []),
                             "rt_filter_partners": st.session_state.get("rt_filter_partners", []),
@@ -2610,6 +2690,8 @@ def render_response_times_content():
                                 "rt_filter_status": st.session_state.get("rt_filter_status", []),
                                 "rt_filter_subcategory": st.session_state.get("rt_filter_subcategory", []),
                                 "rt_filter_date": [str(d) for d in st.session_state.get("rt_filter_date", [])] if isinstance(st.session_state.get("rt_filter_date"), (list, tuple)) else [str(st.session_state.get("rt_filter_date"))] if st.session_state.get("rt_filter_date") else [],
+                                "rt_use_closed_date": st.session_state.get("rt_use_closed_date", False),
+                                "rt_filter_closed_date": [str(d) for d in st.session_state.get("rt_filter_closed_date", [])] if isinstance(st.session_state.get("rt_filter_closed_date"), (list, tuple)) else [str(st.session_state.get("rt_filter_closed_date"))] if st.session_state.get("rt_filter_closed_date") else [],
                                 "rt_filter_assignee": st.session_state.get("rt_filter_assignee", []),
                                 "rt_filter_components": st.session_state.get("rt_filter_components", []),
                                 "rt_filter_partners": st.session_state.get("rt_filter_partners", []),
@@ -2626,7 +2708,7 @@ def render_response_times_content():
                                 import json
                                 filters = json.loads(st.session_state.rt_active_preset_json)
                                 for k, v in filters.items():
-                                    if k == "rt_filter_date":
+                                    if k in ["rt_filter_date", "rt_filter_closed_date"]:
                                         st.session_state[k] = [pd.to_datetime(d).date() for d in v] if len(v) > 1 else pd.to_datetime(v[0]).date() if len(v) == 1 else datetime.now().date()
                                     else:
                                         st.session_state[k] = v
@@ -2701,10 +2783,31 @@ def render_response_times_content():
                 if not selected_subcategories: selected_subcategories = all_subcategories
 
             with fcol4:
+                import calendar
+                today_dt = datetime.now().date()
+                start_of_month_dt = today_dt.replace(day=1)
+                last_day_dt = calendar.monthrange(today_dt.year, today_dt.month)[1]
+                end_of_month_dt = today_dt.replace(day=last_day_dt)
+
+                default_creation = st.session_state.get("rt_filter_date")
+                if not isinstance(default_creation, (list, tuple)) or not default_creation:
+                    st.session_state["rt_filter_date"] = [start_of_month_dt, end_of_month_dt]
+
                 date_range = st.date_input(
                     "Εύρος Ημερολογίου (Creation):",
                     key="rt_filter_date"
                 )
+                use_closed_date = st.checkbox("Φίλτρο Ημ. Κλεισίματος", key="rt_use_closed_date")
+                if use_closed_date:
+                    default_closed = st.session_state.get("rt_filter_closed_date")
+                    if not isinstance(default_closed, (list, tuple)) or not default_closed:
+                        st.session_state["rt_filter_closed_date"] = [start_of_month_dt, end_of_month_dt]
+                    closed_date_range = st.date_input(
+                        "Εύρος Ημερολογίου (Closure):",
+                        key="rt_filter_closed_date"
+                    )
+                else:
+                    closed_date_range = None
 
             with fcol5:
                 all_assignees = sorted(rt_df["AssigneeName"].dropna().unique().tolist())
@@ -2739,17 +2842,43 @@ def render_response_times_content():
             start_date = date_range
             end_date = start_date
 
-        # Apply Filters
-        filtered_rt_df = rt_df[
-            (rt_df["Status"].isin(selected_statuses)) &
-            (rt_df["Project"].isin(selected_projects)) &
-            (rt_df["SubCategory"].isin(selected_subcategories)) &
-            (rt_df["Components"].isin(selected_components)) &
-            (rt_df["PartnerName"].isin(selected_partners)) &
-            (rt_df["CustomerName"].isin(selected_customers)) &
-            (rt_df["AssigneeName"].isin(selected_assignees)) &
+        # Parse Closed Date Range
+        use_closed_date = st.session_state.get("rt_use_closed_date", False)
+        closed_start, closed_end = None, None
+        if use_closed_date and closed_date_range:
+            if isinstance(closed_date_range, (list, tuple)) and len(closed_date_range) == 2:
+                closed_start, closed_end = closed_date_range
+            elif isinstance(closed_date_range, (list, tuple)) and len(closed_date_range) == 1:
+                closed_start = closed_date_range[0]
+                closed_end = closed_start
+            elif isinstance(closed_date_range, (list, tuple)) and len(closed_date_range) == 0:
+                closed_start = datetime.now().date()
+                closed_end = closed_start
+            else:
+                closed_start = closed_date_range
+                closed_end = closed_date_range
+
+        # Apply Date-Only Filters
+        date_filtered_rt_df = rt_df[
             (rt_df["CreationDate"].dt.date >= start_date) &
             (rt_df["CreationDate"].dt.date <= end_date)
+        ]
+        if use_closed_date and closed_start and closed_end:
+            date_filtered_rt_df = date_filtered_rt_df[
+                date_filtered_rt_df["ClosedDate"].notna() &
+                (date_filtered_rt_df["ClosedDate"].dt.date >= closed_start) &
+                (date_filtered_rt_df["ClosedDate"].dt.date <= closed_end)
+            ]
+
+        # Apply Attribute Filters on top of Date-Only Filtered DataFrame
+        filtered_rt_df = date_filtered_rt_df[
+            (date_filtered_rt_df["Status"].isin(selected_statuses)) &
+            (date_filtered_rt_df["Project"].isin(selected_projects)) &
+            (date_filtered_rt_df["SubCategory"].isin(selected_subcategories)) &
+            (date_filtered_rt_df["Components"].isin(selected_components)) &
+            (date_filtered_rt_df["PartnerName"].isin(selected_partners)) &
+            (date_filtered_rt_df["CustomerName"].isin(selected_customers)) &
+            (date_filtered_rt_df["AssigneeName"].isin(selected_assignees))
         ].copy()
 
         # Check for empty dataframe
@@ -2759,12 +2888,15 @@ def render_response_times_content():
             # 2. KPI Summary
             st.write("<br>", unsafe_allow_html=True)
             st.subheader("📊 KPI Summary")
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
 
-            col1.metric("Total Tickets", len(filtered_rt_df))
-            col2.metric("Creation->FirstExternalResponse", rt_safe_mean(filtered_rt_df["Creation->FirstExternalResponse"]))
-            col3.metric("External Resp → Closed", rt_safe_mean(filtered_rt_df["FirstExternalResponse->Closed"]))
-            col4.metric("Creation → Closed", rt_safe_mean(filtered_rt_df["Creation->Closed"]))
+            col1.metric("Filtered Tickets", len(filtered_rt_df), help="Αιτήματα που ικανοποιούν όλα τα ενεργά φίλτρα.")
+            col2.metric("Total Tickets", len(date_filtered_rt_df), help="Συνολικά αιτήματα στο επιλεγμένο ημερολογιακό εύρος (Created & Closed).")
+            col3.metric("Creation → InProgress", rt_safe_mean(filtered_rt_df["Creation->InProgress"]))
+            col4.metric("Creation->FirstExternalResponse", rt_safe_mean(filtered_rt_df["Creation->FirstExternalResponse"]))
+            col5.metric("InProgress → Closed", rt_safe_mean(filtered_rt_df["InProgress->Closed"]))
+            col6.metric("External Resp → Closed", rt_safe_mean(filtered_rt_df["FirstExternalResponse->Closed"]))
+            col7.metric("Creation → Closed", rt_safe_mean(filtered_rt_df["Creation->Closed"]))
 
             # Old / Hidden metrics kept in comments as requested:
             # col_hidden1.metric("Creation → Assigned (days)", rt_safe_mean(filtered_rt_df["Creation->Assigned"]))
@@ -2775,7 +2907,7 @@ def render_response_times_content():
             # col_hidden6.metric("Internal Resp → Closed", rt_safe_mean(filtered_rt_df["FirstInternalResponse->Closed"]))
 
             st.markdown("---")
-            st.info("ℹ️ **Σημείωση SLA**: Αυτή τη στιγμή οι χρόνοι προβάλλονται σε SLA 24ωρου. Για να υπολογιστεί το σωστό SLA (Δευτέρα - Παρασκευή 9πμ - 5μμ) θα πρέπει οι μέσοι χρόνοι να διαιρεθούν με το 3.")
+            st.info("ℹ️ **Σημείωση SLA**: Οι χρόνοι υπολογίζονται αυτόματα με βάση εργάσιμο SLA 8ώρου (Δευτέρα - Παρασκευή 9πμ - 5μμ), εξαιρώντας τα Σαββατοκύριακα.")
 
             # 3. Group By Selection
             group_options = ["Project", "AssigneeName", "Status", "SubCategory", "PartnerName", "CustomerName", "Components"]
@@ -2790,7 +2922,9 @@ def render_response_times_content():
                     # "Assigned->FirstResponse": "mean",
                     # "Assigned->Closed": "mean",
                     # "Creation->FirstInternalResponse": "mean",
+                    "Creation->InProgress": "mean",
                     "Creation->FirstExternalResponse": "mean",
+                    "InProgress->Closed": "mean",
                     # "FirstInternalResponse->Closed": "mean",
                     "FirstExternalResponse->Closed": "mean",
                     "Creation->Closed": "mean"
@@ -2798,18 +2932,40 @@ def render_response_times_content():
                 # Group by and aggregate
                 grouped_df = filtered_rt_df.groupby(sel_group).agg(agg_dict).reset_index()
                 # Rename columns
+                grouped_df = grouped_df.rename(columns={"IssueKey": "Filtered Tickets"})
+
+                # Total count (only date filtered)
+                total_counts_df = date_filtered_rt_df.groupby(sel_group)["IssueKey"].count().reset_index()
+                total_counts_df = total_counts_df.rename(columns={"IssueKey": "Total Tickets"})
+
+                # Merge
+                grouped_df = pd.merge(grouped_df, total_counts_df, on=sel_group, how="left").fillna(0)
+                grouped_df["Total Tickets"] = grouped_df["Total Tickets"].astype(int)
+
                 grouped_df = grouped_df.rename(columns={
-                    "IssueKey": "Total Tickets",
                     # "Creation->Assigned": "Creation → Assigned (Mean Days)",
                     # "Creation->FirstResponse": "Creation → First Response (Mean Days)",
                     # "Assigned->FirstResponse": "Assigned → First Response (Mean Days)",
                     # "Assigned->Closed": "Assigned → Closed (Mean Days)",
                     # "Creation->FirstInternalResponse": "Creation->FirstInternalResponse (Mean Days)",
+                    "Creation->InProgress": "Creation → InProgress (Mean Days)",
                     "Creation->FirstExternalResponse": "Creation->FirstExternalResponse (Mean Days)",
+                    "InProgress->Closed": "InProgress → Closed (Mean Days)",
                     # "FirstInternalResponse->Closed": "Internal Resp → Closed (Mean Days)",
                     "FirstExternalResponse->Closed": "External Resp → Closed (Mean Days)",
                     "Creation->Closed": "Creation → Closed (Mean Days)"
                 })
+
+                # Reorder columns
+                kpi_cols = [
+                    "Creation → InProgress (Mean Days)",
+                    "Creation->FirstExternalResponse (Mean Days)",
+                    "InProgress → Closed (Mean Days)",
+                    "External Resp → Closed (Mean Days)",
+                    "Creation → Closed (Mean Days)"
+                ]
+                existing_kpi_cols = [c for c in kpi_cols if c in grouped_df.columns]
+                grouped_df = grouped_df[sel_group + ["Filtered Tickets", "Total Tickets"] + existing_kpi_cols]
                 
                 st.subheader("📊 KPIs Grouped Summary")
                 st.dataframe(
@@ -2817,13 +2973,16 @@ def render_response_times_content():
                     width='stretch',
                     height=400,
                     column_config={
-                        "Total Tickets": st.column_config.NumberColumn("Total Tickets", format="%d"),
+                        "Filtered Tickets": st.column_config.NumberColumn("Filtered Tickets", format="%d", help="Αιτήματα που ικανοποιούν όλα τα ενεργά φίλτρα."),
+                        "Total Tickets": st.column_config.NumberColumn("Total Tickets", format="%d", help="Συνολικά αιτήματα στο επιλεγμένο ημερολογιακό εύρος (Created & Closed), αγνοώντας τα άλλα φίλτρα."),
                         # "Creation → Assigned (Mean Days)": st.column_config.NumberColumn("Creation → Assigned (Avg Days)", format="%.2f"),
                         # "Creation → First Response (Mean Days)": st.column_config.NumberColumn("Creation → First Response (Avg Days)", format="%.2f"),
                         # "Assigned → First Response (Mean Days)": st.column_config.NumberColumn("Assigned → First Response (Avg Days)", format="%.2f"),
                         # "Assigned → Closed (Mean Days)": st.column_config.NumberColumn("Assigned → Closed (Avg Days)", format="%.2f"),
                         # "Creation->FirstInternalResponse (Mean Days)": st.column_config.NumberColumn("Creation->FirstInternalResponse (Avg Days)", format="%.2f"),
+                        "Creation → InProgress (Mean Days)": st.column_config.NumberColumn("Creation → InProgress (Avg Days)", format="%.2f"),
                         "Creation->FirstExternalResponse (Mean Days)": st.column_config.NumberColumn("Creation->FirstExternalResponse (Avg Days)", format="%.2f"),
+                        "InProgress → Closed (Mean Days)": st.column_config.NumberColumn("InProgress → Closed (Avg Days)", format="%.2f"),
                         # "Internal Resp → Closed (Mean Days)": st.column_config.NumberColumn("Internal Resp → Closed (Avg Days)", format="%.2f"),
                         "External Resp → Closed (Mean Days)": st.column_config.NumberColumn("External Resp → Closed (Avg Days)", format="%.2f"),
                         "Creation → Closed (Mean Days)": st.column_config.NumberColumn("Creation → Closed (Avg Days)", format="%.2f"),
@@ -2846,6 +3005,7 @@ def render_response_times_content():
                     "ProjectId", "IssueKey", "Project", "Type", "JiraLink", "AssigneeName", "Components", 
                     "PartnerName", "CustomerName", "Status", "SubCategory", "CreationDate", 
                     "FirstAssignedDate", 
+                    "FirstInProgressDate",
                     # "FirstResponseDate",
                     # "FirstInternalResponseDate",
                     "FirstExternalResponseDate",
@@ -2855,7 +3015,9 @@ def render_response_times_content():
                     # "Assigned->FirstResponse",
                     # "Assigned->Closed",
                     # "Creation->FirstInternalResponse",
+                    "Creation->InProgress",
                     "Creation->FirstExternalResponse",
+                    "InProgress->Closed",
                     # "FirstInternalResponse->Closed",
                     "FirstExternalResponse->Closed",
                     "Creation->Closed"
@@ -2882,6 +3044,7 @@ def render_response_times_content():
                         "SubCategory": st.column_config.TextColumn("Sub Category", width=180),
                         "CreationDate": st.column_config.DatetimeColumn("Creation Date", width=160, format="DD/MM/YYYY HH:mm"),
                         "FirstAssignedDate": st.column_config.DatetimeColumn("First Assigned Date", width=160, format="DD/MM/YYYY HH:mm"),
+                        "FirstInProgressDate": st.column_config.DatetimeColumn("First In Progress Date", width=160, format="DD/MM/YYYY HH:mm"),
                         # "FirstResponseDate": st.column_config.DatetimeColumn("First Response Date", width=160, format="DD/MM/YYYY HH:mm"),
                         # "FirstInternalResponseDate": st.column_config.DatetimeColumn("First Internal Response", width=160, format="DD/MM/YYYY HH:mm"),
                         "FirstExternalResponseDate": st.column_config.DatetimeColumn("First External Response", width=160, format="DD/MM/YYYY HH:mm"),
@@ -2891,7 +3054,9 @@ def render_response_times_content():
                         # "Assigned->FirstResponse": st.column_config.NumberColumn("Assigned → First Response (Days)", width=240, format="%.2f"),
                         # "Assigned->Closed": st.column_config.NumberColumn("Assigned → Closed (Days)", width=240, format="%.2f"),
                         # "Creation->FirstInternalResponse": st.column_config.NumberColumn("Creation->FirstInternalResponse (Days)", width=220, format="%.2f"),
+                        "Creation->InProgress": st.column_config.NumberColumn("Creation → InProgress (Days)", width=220, format="%.2f"),
                         "Creation->FirstExternalResponse": st.column_config.NumberColumn("Creation->FirstExternalResponse (Days)", width=220, format="%.2f"),
+                        "InProgress->Closed": st.column_config.NumberColumn("InProgress → Closed (Days)", width=220, format="%.2f"),
                         # "FirstInternalResponse->Closed": st.column_config.NumberColumn("Internal Resp → Closed (Days)", width=220, format="%.2f"),
                         "FirstExternalResponse->Closed": st.column_config.NumberColumn("External Resp → Closed (Days)", width=220, format="%.2f"),
                         "Creation->Closed": st.column_config.NumberColumn("Creation → Closed (Days)", width=220, format="%.2f"),
@@ -2916,10 +3081,13 @@ def render_response_times_content():
             (rt_df["Creation->Assigned"] < 0) |
             (rt_df["Creation->FirstInternalResponse"] < 0) |
             (rt_df["Creation->FirstExternalResponse"] < 0) |
+            (rt_df["Creation->InProgress"] < 0) |
+            (rt_df["InProgress->Closed"] < 0) |
             (rt_df["FirstInternalResponse->Closed"] < 0) |
             (rt_df["FirstExternalResponse->Closed"] < 0) |
             (rt_df["Creation->Closed"] < 0)
         ][["IssueKey", "JiraLink", "Status", "CreationDate", "FirstAssignedDate", 
+           "FirstInProgressDate",
            # "FirstInternalResponseDate", 
            "FirstExternalResponseDate", "ClosedDate"]].copy()
 
@@ -2935,6 +3103,7 @@ def render_response_times_content():
                         "Status": st.column_config.TextColumn("Status", width=110),
                         "CreationDate": st.column_config.DatetimeColumn("Creation Date", width=160, format="DD/MM/YYYY HH:mm"),
                         "FirstAssignedDate": st.column_config.DatetimeColumn("First Assigned Date", width=160, format="DD/MM/YYYY HH:mm"),
+                        "FirstInProgressDate": st.column_config.DatetimeColumn("First In Progress Date", width=160, format="DD/MM/YYYY HH:mm"),
                         # "FirstInternalResponseDate": st.column_config.DatetimeColumn("First Internal Response", width=160, format="DD/MM/YYYY HH:mm"),
                         "FirstExternalResponseDate": st.column_config.DatetimeColumn("First External Response", width=160, format="DD/MM/YYYY HH:mm"),
                         "ClosedDate": st.column_config.DatetimeColumn("Closed Date", width=160, format="DD/MM/YYYY HH:mm")
@@ -3221,11 +3390,14 @@ def render_manual_content():
         st.markdown("""
         Η καρτέλα **`⏱️ Χρόνοι Απόκρισης`** (ορατή μόνο σε Administrators και Team Leaders) παρέχει εργαλεία ανάλυσης των χρόνων απόκρισης των Epic tickets:
         1. **Φόρτωση Δεδομένων**: Πατήστε το κουμπί **`🔄 Φόρτωση Δεδομένων & KPIs από τη Βάση`**.
-        2. **KPI Metrics & Summary**: Εμφανίζονται οι μέσοι χρόνοι (σε ημέρες) για τις μεταβάσεις (π.χ. Creation → First External Response, External Resp → Closed, Creation → Closed).
-        3. **Φίλτρα Αναζήτησης KPIs**: Μπορείτε να φιλτράρετε τον πίνακα με βάση το Status, το Project, το Sub Category, τον Assignee, τον Partner, τον Customer και το εύρος ημερομηνιών δημιουργίας.
+        2. **KPI Metrics & Summary**: Εμφανίζονται οι μέσοι χρόνοι (σε ημέρες) για τις μεταβάσεις (π.χ. Creation → InProgress, InProgress → Closed, Creation → First External Response, External Resp → Closed, Creation → Closed).
+        3. **Φίλτρα Αναζήτησης KPIs**: Μπορείτε να φιλτράρετε τον πίνακα με βάση το Status, το Project, το Sub Category, τον Assignee, τον Partner, τον Customer, καθώς και τα ημερομηνιακά εύρη δημιουργίας (Creation) και κλεισίματος (Closure).
         4. **Λήψη σε Excel**: Πατώντας **`📥 Λήψη σε Excel`** μπορείτε να κάνετε λήψη των φιλτραρισμένων KPIs σε μορφή Excel.
         5. **Πίνακας Ελέγχου Λαθών**: Στο κάτω μέρος υπάρχει πίνακας που εντοπίζει τυχόν σφάλματα καταχωρήσεων στο Jira (π.χ. αρνητικούς χρόνους).
-        6. **Υπολογισμός SLA**: Οι χρόνοι προβάλλονται σε SLA 24ωρου. Για τον υπολογισμό σε 8ωρο SLA (Δευτέρα - Παρασκευή 9πμ - 5μμ) διαιρέστε τους μέσους χρόνους με το 3.
+        6. **Υπολογισμός SLA**: Οι χρόνοι υπολογίζονται αυτόματα με βάση εργάσιμο SLA 8ώρου (Δευτέρα - Παρασκευή 9πμ - 5μμ), εξαιρώντας τα Σαββατοκύριακα. Οι επίσημες αργίες μετρούν κανονικά ως εργάσιμες ημέρες καθώς υφίσταται προσωπικό ασφαλείας.
+        7. **Διαχωρισμός Εισιτηρίων**:
+           * **Filtered Tickets**: Εισιτήρια που ικανοποιούν όλα τα επιλεγμένα φίλτρα.
+           * **Total Tickets**: Συνολικά εισιτήρια που ικανοποιούν μόνο τα ημερομηνιακά φίλτρα (Created & Closed), επιτρέποντας τη σύγκριση των φιλτραρισμένων με τον συνολικό όγκο της περιόδου.
         """)
 
     # expander 7 - Knowledge Hub (Public)
@@ -3261,6 +3433,13 @@ def render_manual_content():
     # expander 10 - Changelog
     with st.expander("📋 10. Ιστορικό Εκδόσεων (Changelog)"):
         st.markdown("""
+        ### Έκδοση 26.5.5 (2026-06-24)
+        * **Νέο:** Αυτόματος υπολογισμός χρόνων με βάση εργάσιμο SLA 8ώρου (Δευτέρα-Παρασκευή 9πμ-5μμ, εξαιρώντας ΣΚ).
+        * **Νέο:** Προσθήκη SLA μετρήσεων για τη φάση In Progress (`Creation → InProgress` και `InProgress → Closed`).
+        * **Νέο:** Προσθήκη φίλτρου ημερομηνίας κλεισίματος αιτημάτων (Closed Date range filter).
+        * **Νέο:** Διαχωρισμός όγκου εισιτηρίων σε `Filtered Tickets` (επηρεάζεται από όλα τα φίλτρα) και `Total Tickets` (επηρεάζεται μόνο από τις ημερομηνίες) στις κάρτες KPIs και την ομαδοποίηση.
+        * **Fix:** Επίλυση Streamlit API exception προειδοποίησης για τα default date input πεδία και διόρθωση της συμπεριφοράς επιλογής εύρους ημερομηνιών.
+        
         ### Έκδοση 26.5.4 (2026-06-23)
         * **Νέο:** Προσθήκη καρτέλας `📖 Dev Docs` στον ETL Manager με αυτόνομη απόδοση Mermaid.js διαγραμμάτων (εναλλαγή μεταξύ `DEVELOPER_DOCS.md` και `sync_db_docs.md`).
         * **Νέο:** Προσθήκη επιλογής `🎫 Jira Full Sync (Από Μηδέν)` στον ETL Manager.
@@ -3316,6 +3495,8 @@ st.session_state["widget_backup"] = {
     "rt_filter_status": st.session_state.get("rt_filter_status"),
     "rt_filter_subcategory": st.session_state.get("rt_filter_subcategory"),
     "rt_filter_date": st.session_state.get("rt_filter_date"),
+    "rt_use_closed_date": st.session_state.get("rt_use_closed_date"),
+    "rt_filter_closed_date": st.session_state.get("rt_filter_closed_date"),
     "rt_filter_assignee": st.session_state.get("rt_filter_assignee"),
     "rt_filter_components": st.session_state.get("rt_filter_components"),
     "rt_filter_partners": st.session_state.get("rt_filter_partners"),
