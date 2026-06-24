@@ -271,6 +271,7 @@ def transform_jira_issue(raw_issue: Dict[str, Any]) -> IssueSchema:
     
     # 1. Προσθήκη Assignee
     assignee_dict = fields.get("assignee") or {}
+    assignee_id = assignee_dict.get("accountId")
     assignee_identity = assignee_dict.get("emailAddress") or assignee_dict.get("displayName")
     if assignee_identity:
         resource_list.append(assignee_identity)
@@ -307,7 +308,7 @@ def transform_jira_issue(raw_issue: Dict[str, Any]) -> IssueSchema:
         Components=(extract_jira_value(fields.get("components")) or "")[:255],
         Resources=resources_str or "",
         Status=status_dict.get("name") or "",
-        
+        Assignee=assignee_id,
         CreationDate=fields.get("created") or datetime.now(timezone.utc),
         RevisedDate=fields.get("updated"), 
         ClosedDate=fields.get("resolutiondate"), 

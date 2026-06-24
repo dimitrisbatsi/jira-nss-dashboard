@@ -127,6 +127,7 @@ def upsert_issues(df: pd.DataFrame, engine):
         'Severity': String(100),
         'Resolution': String(100),
         'Status': String(100),
+        'Assignee': String(100),
         'CreationDate': DateTime(),
         'RevisedDate': DateTime(),
         'ClosedDate': DateTime(),
@@ -160,6 +161,7 @@ def upsert_issues(df: pd.DataFrame, engine):
                 Target.Severity = Source.Severity,
                 Target.Resolution = Source.Resolution,
                 Target.Status = Source.Status,
+                Target.Assignee = Source.Assignee,
                 Target.CreationDate = Source.CreationDate,
                 Target.RevisedDate = Source.RevisedDate,
                 Target.ClosedDate = Source.ClosedDate,
@@ -168,8 +170,8 @@ def upsert_issues(df: pd.DataFrame, engine):
                 Target.Components = Source.Components,
                 Target.ImportedAt = Source.ImportedAt
         WHEN NOT MATCHED BY TARGET THEN
-            INSERT (IssueID, SourceApp, IssueKey, ProjectID, VersionID, Reporter, Title, Type, Priority, Severity, Resolution, Status, CreationDate, RevisedDate, ClosedDate, AffectedVersions, Resources, Components, ImportedAt)
-            VALUES (Source.IssueID, Source.SourceApp, Source.IssueKey, Source.ProjectID, Source.VersionID, Source.Reporter, Source.Title, Source.Type, Source.Priority, Source.Severity, Source.Resolution, Source.Status, Source.CreationDate, Source.RevisedDate, Source.ClosedDate, Source.AffectedVersions, Source.Resources, Source.Components, Source.ImportedAt)
+            INSERT (IssueID, SourceApp, IssueKey, ProjectID, VersionID, Reporter, Title, Type, Priority, Severity, Resolution, Status, Assignee, CreationDate, RevisedDate, ClosedDate, AffectedVersions, Resources, Components, ImportedAt)
+            VALUES (Source.IssueID, Source.SourceApp, Source.IssueKey, Source.ProjectID, Source.VersionID, Source.Reporter, Source.Title, Source.Type, Source.Priority, Source.Severity, Source.Resolution, Source.Status, Source.Assignee, Source.CreationDate, Source.RevisedDate, Source.ClosedDate, Source.AffectedVersions, Source.Resources, Source.Components, Source.ImportedAt)
         OUTPUT $action INTO @MergeOutput;
         
         SELECT 

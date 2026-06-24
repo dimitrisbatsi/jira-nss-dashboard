@@ -101,6 +101,7 @@ class StagingIssue(Base):
     Severity = Column(String(100), nullable=True)
     Resolution = Column(String(100), nullable=True)
     Status = Column(String(100), nullable=True)
+    Assignee = Column(String(100), nullable=True)
     CreationDate = Column(DateTime, nullable=False)
     RevisedDate = Column(DateTime, nullable=True)
     ClosedDate = Column(DateTime, nullable=True)

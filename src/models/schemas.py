@@ -38,6 +38,7 @@ class IssueSchema(BaseModel):
     Severity: Optional[str] = ""
     Resolution: Optional[str] = ""
     Status: Optional[str] = ""
+    Assignee: Optional[str] = None
     CreationDate: datetime
     RevisedDate: Optional[datetime] = None
     ClosedDate: Optional[datetime] = None
