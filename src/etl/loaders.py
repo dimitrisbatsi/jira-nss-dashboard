@@ -319,7 +319,7 @@ def upsert_audits(df: pd.DataFrame, engine):
         
         MERGE GAudit AS Target
         USING {temp_table} AS Source
-        ON Target.AuditID = Source.AuditID AND Target.SourceApp = Source.SourceApp -- <--- COMPOSITE KEY
+        ON Target.AuditID = Source.AuditID AND Target.SourceApp = Source.SourceApp AND Target.FieldName = Source.FieldName
         WHEN MATCHED THEN
             UPDATE SET 
                 Target.IssueID = Source.IssueID,

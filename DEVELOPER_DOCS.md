@@ -1,4 +1,4 @@
-# Developer Documentation - NSS Timesheet App v26.5.5
+# Developer Documentation - NSS Timesheet App v26.5.5c
 
 Αυτό το έγγραφο περιέχει τις τεχνικές λεπτομέρειες, την αρχιτεκτονική και την τεκμηρίωση των μεθόδων της εφαρμογής **NSS Timesheet Dashboard**. Είναι σχεδιασμένο για developers που θέλουν να συντηρήσουν, να επεκτείνουν ή να αποσφαλματώσουν την εφαρμογή.
 
@@ -181,6 +181,7 @@ graph TD
 * **`run_incremental_jira_etl(ignore_last_sync=False)`**: Εκτελεί incremental συγχρονισμό για τα Jira Issues.
   * **`ignore_last_sync=True` (Jira Full Sync)**: Παρακάμπτει την ημερομηνία τελευταίου συγχρονισμού και θέτει ως αρχική ημερομηνία την `2000-01-01`, κάνοντας λήψη όλων των δεδομένων από το μηδέν.
   * Φιλτράρει τα issues βάσει των Jira Projects και του JQL query: `product name[dropdown] IN ("PYLON COMMERCIAL", "PYLON ERP", "PYLON FLEX", "Galaxy Enterprise")`.
+* **`run_single_jira_issue_sync(issue_key)`**: Συγχρονίζει ένα συγκεκριμένο Jira Issue με βάση το IssueKey (π.χ. `PYLCOM-1259`). Εκτελεί όλα τα επιμέρους βήματα (σύνδεση, λήψη raw δεδομένων, transform για Issues, Audits, Custom Fields, Comments, Worklogs και upsert loaders στη βάση δεδομένων) με αναλυτικό step-by-step logging για σκοπούς debugging. Εξασφαλίζει επίσης την κωδικοποίηση της κονσόλας σε UTF-8 για την αποφυγή encoding σφαλμάτων σε Windows locale.
 
 ### 5.5. [modules/test_comments_etl.py](file:///c:/Users/d.batsilis/OneDrive%20-%20Epsilon%20Net%20S.A/Development/NSSTimesheetApp/modules/test_comments_etl.py)
 * **`run_incremental_comments_etl()`**: Εκτελεί μεμονωμένο incremental συγχρονισμό για τα σχόλια (Comments) των Issues.
@@ -193,3 +194,6 @@ graph TD
    Για να προστεθεί ένα νέο custom field στο συγχρονισμό του Jira, απλά προσθέστε το όνομα και το ID του στο αρχείο [jira_custom_fields.csv](file:///c:/Users/d.batsilis/OneDrive%20-%20Epsilon%20Net%20S.A/Development/NSSTimesheetApp/jira_custom_fields.csv). Το ETL θα το διαβάσει αυτόματα στην επόμενη εκτέλεση.
 2. **Rerun από το μηδέν (Jira)**:
    Αν για οποιοδήποτε λόγο χαθούν δεδομένα ή χρειαστεί πλήρης επανασυγχρονισμός, χρησιμοποιήστε το tab **Jira Full Sync (Από Μηδέν)** στον ETL Manager της εφαρμογής.
+3. **Αποσφαλμάτωση Μεμονωμένου Εισιτηρίου (Jira Debugger)**:
+   Αν κάποιο συγκεκριμένο Jira Issue εμφανίζει κενά δεδομένα ή σφάλματα συγχρονισμού, μεταβείτε στο tab **🔍 ETL Debugger** στον ETL Manager. Εισάγετε το Issue Key (π.χ. `PYLCOM-1259`) και πατήστε το κουμπί συγχρονισμού. Το ETL θα εκτελέσει απομονωμένα όλα τα βήματα λήψης, μετασχηματισμού και αποθήκευσης, εμφανίζοντας live-streaming logs και stack traces σφαλμάτων στην οθόνη.
+

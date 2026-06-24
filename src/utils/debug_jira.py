@@ -40,9 +40,9 @@ def export_jira_first_page():
             fields_count = len(first_issue.get('fields', {}))
             print(f"\n[ΓΡΗΓΟΡΟΣ ΕΛΕΓΧΟΣ] Το Issue {first_issue.get('key')} περιέχει {fields_count} πεδία στο αντικείμενο 'fields'.")
             if fields_count == 0:
-                print(" ⚠️ ΠΡΟΣΟΧΗ: Το αντικείμενο 'fields' είναι ΕΝΤΕΛΩΣ ΑΔΕΙΟ!")
+                print(" [ΠΡΟΣΟΧΗ] Το αντικείμενο 'fields' είναι ΕΝΤΕΛΩΣ ΑΔΕΙΟ!")
             else:
-                print(" ✅ Το αντικείμενο 'fields' φαίνεται γεμάτο!")
+                print(" [OK] Το αντικείμενο 'fields' φαίνεται γεμάτο!")
                 
     else:
         print(f"[ΣΦΑΛΜΑ] {response.status_code}: {response.text}")

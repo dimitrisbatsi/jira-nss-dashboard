@@ -18,7 +18,7 @@ from modules.test_users_etl import run_users_etl, run_jira_users_etl
 from modules.test_components_etl import run_components_etl, run_jira_components_etl
 from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl
 
-APP_VERSION = "26.5.5b (2026-06-24)"
+APP_VERSION = "26.5.5c (2026-06-24)"
 
 # --- Helper functions for state updates ---
 def on_only_me_click(username):
@@ -3157,10 +3157,15 @@ def render_markdown_with_mermaid(file_path):
 def run_etl_subprocess_statement(statement_str, description):
     import subprocess
     import sys
+    import os
     
     st.write(f"### 🖥️ Κονσόλα: {description}")
     console_placeholder = st.empty()
     log_lines = []
+    
+    # Force Python subprocess to output in UTF-8 to prevent charmap/encoding crashes on Windows
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
     
     # Run the Python interpreter as a subprocess with unbuffered output (-u)
     # Read binary (text=False) to handle multi-encoding safe fallbacks on Windows
@@ -3169,6 +3174,7 @@ def run_etl_subprocess_statement(statement_str, description):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=False,
+        env=env,
         bufsize=1
     )
     
@@ -3194,10 +3200,11 @@ def render_etl_manager_content():
     st.markdown("Διαχειριστικό περιβάλλον για τον συγχρονισμό δεδομένων από Gemini και Jira στο SQL Server.")
 
     # Δημιουργία Tabs (Καρτέλες) μέσα στο κυρίως Tab του μενού
-    tab_actions, tab_full_sync, tab_jira_full_sync, tab_dev_docs = st.tabs([
+    tab_actions, tab_full_sync, tab_jira_full_sync, tab_debugger, tab_dev_docs = st.tabs([
         "⚡ Μεμονωμένες Ενέργειες", 
         "📦 Μαζικός Συγχρονισμός", 
         "🎫 Jira Full Sync (Από Μηδέν)",
+        "🔍 ETL Debugger",
         "📖 Dev Docs"
     ])
 
@@ -3348,6 +3355,45 @@ def render_etl_manager_content():
             else:
                 st.error("Παρουσιάστηκε σφάλμα κατά την εκτέλεση του Jira Full Sync Pipeline.")
 
+    with tab_debugger:
+        st.write("🔍 Διάγνωση & Συγχρονισμός Μεμονωμένου Issue")
+        st.info(
+            "Χρησιμοποιήστε αυτή την ενότητα για να ελέγξετε αν κάποιο συγκεκριμένο Jira Issue συγχρονίζεται σωστά. "
+            "Η κονσόλα θα εμφανίσει αναλυτικές πληροφορίες μετασχηματισμού και τυχόν σφάλματα (stack traces)."
+        )
+        
+        # Πεδίο κειμένου για την εισαγωγή του Key
+        debug_issue_key = st.text_input(
+            "Jira Issue Key (π.χ. PYLCOM-536):", 
+            placeholder="Εισάγετε το Key του εισιτηρίου...",
+            key="etl_debug_issue_key"
+        ).strip()
+        
+        if st.button("🔄 Συγχρονισμός & Debugging Issue", type="primary", key="etl_debug_sync_btn"):
+            if not debug_issue_key:
+                st.warning("Παρακαλώ εισάγετε ένα έγκυρο Issue Key (π.χ. PYLCOM-536) πριν ξεκινήσετε.")
+            else:
+                start_time = time.time()
+                statement = (
+                    "from modules.test_issues_etl import run_single_jira_issue_sync; "
+                    f"success = run_single_jira_issue_sync('{debug_issue_key}'); "
+                    "import sys; sys.exit(0 if success else 1)"
+                )
+                success = run_etl_subprocess_statement(statement, f"Debug Sync Issue '{debug_issue_key}'")
+                
+                end_time = time.time()
+                elapsed = int(end_time - start_time)
+                
+                if success:
+                    write_system_log(
+                        st.session_state.user_id, 
+                        "ETL_DEBUG_ISSUE_SYNC", 
+                        f"Επιτυχής διαγνωστικός συγχρονισμός του Issue '{debug_issue_key}' σε {elapsed}δ."
+                    )
+                    st.success(f"🎉 Ο συγχρονισμός του Issue '{debug_issue_key}' ολοκληρώθηκε με επιτυχία!")
+                else:
+                    st.error(f"❌ Ο συγχρονισμός του Issue '{debug_issue_key}' απέτυχε. Δείτε τα σφάλματα στην παραπάνω κονσόλα.")
+
     with tab_dev_docs:
         doc_choice = st.radio(
             "Επιλογή Εγγράφου Τεκμηρίωσης:", 
@@ -3494,6 +3540,11 @@ def render_manual_content():
     # expander 10 - Changelog
     with st.expander("📋 10. Ιστορικό Εκδόσεων (Changelog)"):
         st.markdown("""
+        ### Έκδοση 26.5.5c (2026-06-24)
+        * **Νέο:** Προσθήκη καρτέλας `🔍 ETL Debugger` στον ETL Manager για τη δοκιμαστική εκτέλεση και αποσφαλμάτωση συγχρονισμού μεμονωμένων Jira Issues (βάσει IssueKey).
+        * **Fix:** Επίλυση `UnicodeEncodeError` κατά την εκτέλεση του debugger σε Windows συστήματα με ελληνικό locale (κωδικοποίηση `CP1253`), μέσω αυτόματης αναδιάρθρωσης των `stdout` & `stderr` σε UTF-8.
+        * **Fix:** Επίλυση SQL Server merge exception στον πίνακα `GAudit` (διπλότυπες εγγραφές ανά AuditID κατά την επεξεργασία πολλαπλών πεδίων στο ίδιο changelog history event) με προσθήκη του `FieldName` στα merge keys.
+        
         ### Έκδοση 26.5.5 (2026-06-24)
         * **Νέο:** Αυτόματος υπολογισμός χρόνων με βάση εργάσιμο SLA 8ώρου (Δευτέρα-Παρασκευή 9πμ-5μμ, εξαιρώντας ΣΚ).
         * **Νέο:** Προσθήκη SLA μετρήσεων για τη φάση In Progress (`Creation → InProgress` και `InProgress → Closed`).

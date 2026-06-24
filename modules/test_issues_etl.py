@@ -1,4 +1,5 @@
 import os
+import sys
 import pandas as pd
 import traceback
 from datetime import datetime, timezone
@@ -6,6 +7,14 @@ from tqdm import tqdm
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy import text
+
+# --- Reconfigure console output encoding to UTF-8 for Greek/Emoji console display on Windows ---
+if sys.platform.startswith('win'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
 
 load_dotenv()
 
@@ -320,6 +329,103 @@ def get_dynamic_jira_fields(csv_filename: str = "jira_custom_fields.csv"):
         
     final_fields = list(set(base_fields + cf_list))
     return ",".join(final_fields), cf_mapping
+
+def run_single_jira_issue_sync(issue_key: str):
+    """
+    Συγχρονίζει ένα συγκεκριμένο Jira Issue με βάση το IssueKey (π.χ. PYLCOM-536).
+    Εκτυπώνει αναλυτικά βήματα και σφάλματα για σκοπούς debugging.
+    """
+    print(f"\n[DEBUGGER] Έναρξη συγχρονισμού για το μεμονωμένο Issue: {issue_key}")
+    client = JiraAPIClient()
+    
+    # 1. Έλεγχος Σύνδεσης
+    if not client.test_connection():
+        print("[ΣΦΑΛΜΑ] Αποτυχία σύνδεσης στο Jira API.")
+        return False
+        
+    jql_query = f'key = "{issue_key}"'
+    my_fields, custom_fields_mapping = get_dynamic_jira_fields("jira_custom_fields.csv")
+    
+    print(f"[*] Εκτέλεση ερωτήματος JQL: {jql_query}")
+    try:
+        generator = client.get_issues_chunked(jql_query=jql_query, expand="changelog", chunk_size=1, requested_fields=my_fields)
+        chunk_of_issues = next(generator)
+    except StopIteration:
+        print(f"[ΠΡΟΕΙΔΟΠΟΙΗΣΗ] Δεν βρέθηκε κανένα Issue με Key '{issue_key}' στο Jira.")
+        return False
+    except Exception as e:
+        print(f"[ΣΦΑΛΜΑ API] Σφάλμα κατά τη λήψη του Issue: {e}")
+        traceback.print_exc()
+        return False
+        
+    if not chunk_of_issues:
+        print(f"[ΠΡΟΕΙΔΟΠΟΙΗΣΗ] Το API επέστρεψε άδεια λίστα για το Key '{issue_key}'.")
+        return False
+        
+    raw_issue = chunk_of_issues[0]
+    print(f"[OK] Λήφθηκαν επιτυχώς raw δεδομένα για το issue {issue_key}.")
+    
+    # 2. Μετασχηματισμός & Debugging
+    try:
+        print("[*] Βήμα 1: Μετασχηματισμός Issue...")
+        issue_obj = transform_jira_issue(raw_issue)
+        print(f"  -> Δεδομένα Issue Schema: {issue_obj.model_dump()}")
+        
+        print("[*] Βήμα 2: Μετασχηματισμός Audits (Changelog)...")
+        audits = transform_jira_audits(raw_issue)
+        print(f"  -> Βρέθηκαν {len(audits)} εγγραφές ιστορικού (Audits).")
+        
+        print("[*] Βήμα 3: Μετασχηματισμός Custom Fields...")
+        custom_fields = transform_jira_custom_fields(raw_issue, custom_fields_mapping)
+        print(f"  -> Βρέθηκαν {len(custom_fields)} custom fields.")
+        
+        print("[*] Βήμα 4: Μετασχηματισμός Comments...")
+        comments = transform_jira_comments(raw_issue)
+        print(f"  -> Βρέθηκαν {len(comments)} σχόλια.")
+        
+        print("[*] Βήμα 5: Μετασχηματισμός Worklogs (Time Trackings)...")
+        time_trackings = transform_jira_time_trackings(raw_issue)
+        print(f"  -> Βρέθηκαν {len(time_trackings)} καταγραφές χρόνου.")
+        
+    except Exception as e:
+        print(f"[ΣΦΑΛΜΑ TRANSFORMATION] Αποτυχία μετασχηματισμού: {e}")
+        traceback.print_exc()
+        return False
+        
+    # 3. Αποθήκευση στη Βάση (Upserts)
+    print("\n[*] Βήμα 6: Αποθήκευση στη Βάση Δεδομένων...")
+    try:
+        df_issue = pd.DataFrame([issue_obj.model_dump()])
+        print("  -> Upserting Issue...")
+        ins, upd = upsert_issues(df_issue, engine)
+        print(f"  -> Issue Upserted: Inserted {ins} | Updated {upd}")
+        
+        if audits:
+            df_audits = pd.DataFrame([a.model_dump() for a in audits])
+            print("  -> Upserting Audits...")
+            upsert_audits(df_audits, engine)
+            
+        if custom_fields:
+            df_cf = pd.DataFrame([cf.model_dump() for cf in custom_fields])
+            print("  -> Upserting Custom Fields...")
+            upsert_custom_fields(df_cf, engine)
+            
+        if comments:
+            df_comments = pd.DataFrame([c.model_dump() for c in comments])
+            print("  -> Upserting Comments...")
+            upsert_comments(df_comments, engine)
+            
+        if time_trackings:
+            df_tt = pd.DataFrame([t.model_dump() for t in time_trackings])
+            print("  -> Upserting Time Trackings...")
+            upsert_time_tracking(df_tt, engine)
+            
+        print(f"\n[SUCCESS] Ο συγχρονισμός και η αποθήκευση του Issue '{issue_key}' ολοκληρώθηκε επιτυχώς!")
+        return True
+    except Exception as e:
+        print(f"[ΣΦΑΛΜΑ DATABASE] Αποτυχία αποθήκευσης στη βάση: {e}")
+        traceback.print_exc()
+        return False
 
 if __name__ == "__main__":
     print("--- Ξεκινάει το Gemini ETL ---")
