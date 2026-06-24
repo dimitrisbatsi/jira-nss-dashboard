@@ -1051,25 +1051,25 @@ def rt_load_from_db():
         cf_cat.FieldValue AS [SubCategory],
         cf_part.FieldValue AS [PartnerName],    -- Join 1 για Partner
         cf_cust.FieldValue AS [CustomerName]     -- Join 2 για Customer
-    FROM dbo.GIssues i
+    FROM dbo.GIssues i WITH (NOLOCK)
     
     -- Join για το όνομα του Assignee
-    LEFT JOIN dbo.GUsers u ON i.Assignee = u.UserID AND i.SourceApp = u.SourceApp
+    LEFT JOIN dbo.GUsers u WITH (NOLOCK) ON i.Assignee = u.UserID AND i.SourceApp = u.SourceApp
         
     -- Join για το SubCategory
-    LEFT JOIN dbo.GIssueCustomFields cf_cat 
+    LEFT JOIN dbo.GIssueCustomFields cf_cat WITH (NOLOCK)
         ON i.IssueID = cf_cat.IssueID 
         AND cf_cat.CustomFieldName LIKE '%category%'
         AND cf_cat.SourceApp = i.SourceApp
         
     -- Join για το Partner Name
-    LEFT JOIN dbo.GIssueCustomFields cf_part 
+    LEFT JOIN dbo.GIssueCustomFields cf_part WITH (NOLOCK)
         ON i.IssueID = cf_part.IssueID 
         AND cf_part.CustomFieldName = 'Partner Name'
         AND cf_part.SourceApp = i.SourceApp
         
     -- Join για το Customer Name
-    LEFT JOIN dbo.GIssueCustomFields cf_cust 
+    LEFT JOIN dbo.GIssueCustomFields cf_cust WITH (NOLOCK)
         ON i.IssueID = cf_cust.IssueID 
         AND cf_cust.CustomFieldName = 'LSP Customer Name'
         AND cf_cust.SourceApp = i.SourceApp
@@ -1092,7 +1092,7 @@ def rt_load_first_response():
         
         -- Πρώτη απάντηση από οποιονδήποτε άλλον
         MIN(CASE WHEN Fullname <> 'ExternalCommunicationAccount' THEN Created ELSE NULL END) AS FirstInternalResponseDate
-    FROM dbo.GComments
+    FROM dbo.GComments WITH (NOLOCK)
     WHERE SourceApp = 'Jira'
     GROUP BY IssueID
     """
@@ -1108,7 +1108,7 @@ def rt_load_first_assigned():
     SELECT
         IssueID,
         MIN(Created) AS FirstAssignedDate
-    FROM dbo.GAudit
+    FROM dbo.GAudit WITH (NOLOCK)
     WHERE fieldname = 'Assignee'
       AND newvalue IS NOT NULL
       AND SourceApp = 'Jira'
@@ -1126,7 +1126,7 @@ def rt_load_status_change_date():
     SELECT 
         IssueID,
         MIN(Created) AS FirstInProgressDate
-    FROM dbo.GAudit
+    FROM dbo.GAudit WITH (NOLOCK)
     WHERE FieldName = 'status' 
       AND (NewValue = 'In Progress' OR NewValue = 'In progress' OR NewValue = 'IN PROGRESS')
       AND SourceApp = 'Jira'
@@ -3154,6 +3154,33 @@ def render_markdown_with_mermaid(file_path):
     else:
         st.error(f"Το αρχείο {file_path} δεν βρέθηκε.")
 
+def run_etl_subprocess_statement(statement_str, description):
+    import subprocess
+    import sys
+    
+    st.write(f"### 🖥️ Κονσόλα: {description}")
+    console_placeholder = st.empty()
+    log_lines = []
+    
+    # Run the Python interpreter as a subprocess with unbuffered output (-u)
+    process = subprocess.Popen(
+        [sys.executable, "-u", "-c", statement_str],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        bufsize=1
+    )
+    
+    # Stream output line-by-line
+    for line in iter(process.stdout.readline, ""):
+        log_lines.append(line)
+        # Keep last 150 lines to prevent UI lag
+        console_placeholder.code("".join(log_lines[-150:]))
+        
+    process.wait()
+    return process.returncode == 0
+
 def render_etl_manager_content():
     st.subheader("🚀 Data Warehouse ETL Manager", divider="blue")
     st.markdown("Διαχειριστικό περιβάλλον για τον συγχρονισμό δεδομένων από Gemini και Jira στο SQL Server.")
@@ -3173,51 +3200,79 @@ def render_etl_manager_content():
         
         with col1:
             if st.button("🏢 Sync Projects", width='stretch'):
-                with st.spinner("Συγχρονισμός Projects σε εξέλιξη..."):
-                    run_real_projects_etl()
-                    run_jira_projects_etl()
-                write_system_log(
-                    st.session_state.user_id, 
-                    "ETL_SYNC_PROJECTS", 
-                    "Χειροκίνητος συγχρονισμός Projects (Gemini & Jira)"
+                statement = (
+                    "from modules.test_projects_etl import run_real_projects_etl, run_jira_projects_etl; "
+                    "print('[*] Syncing Gemini Projects...'); run_real_projects_etl(); "
+                    "print('[*] Syncing Jira Projects...'); run_jira_projects_etl(); "
+                    "print('[SUCCESS] Projects synced successfully!')"
                 )
-                st.success("Τα Projects συγχρονίστηκαν επιτυχώς!")
+                success = run_etl_subprocess_statement(statement, "Sync Projects")
+                if success:
+                    write_system_log(
+                        st.session_state.user_id, 
+                        "ETL_SYNC_PROJECTS", 
+                        "Χειροκίνητος συγχρονισμός Projects (Gemini & Jira)"
+                    )
+                    st.success("Τα Projects συγχρονίστηκαν επιτυχώς!")
+                else:
+                    st.error("Παρουσιάστηκε σφάλμα κατά τον συγχρονισμό των Projects.")
 
         with col2:
             if st.button("👥 Sync Users", width='stretch'):
-                with st.spinner("Συγχρονισμός Users σε εξέλιξη..."):
-                    run_users_etl()
-                    run_jira_users_etl()
-                write_system_log(
-                    st.session_state.user_id, 
-                    "ETL_SYNC_USERS", 
-                    "Χειροκίνητος συγχρονισμός Users (Gemini & Jira)"
+                statement = (
+                    "from modules.test_users_etl import run_users_etl, run_jira_users_etl; "
+                    "print('[*] Syncing Gemini Users...'); run_users_etl(); "
+                    "print('[*] Syncing Jira Users...'); run_jira_users_etl(); "
+                    "print('[SUCCESS] Users synced successfully!')"
                 )
-                st.success("Οι Users συγχρονίστηκαν επιτυχώς!")
+                success = run_etl_subprocess_statement(statement, "Sync Users")
+                if success:
+                    write_system_log(
+                        st.session_state.user_id, 
+                        "ETL_SYNC_USERS", 
+                        "Χειροκίνητος συγχρονισμός Users (Gemini & Jira)"
+                    )
+                    st.success("Οι Users συγχρονίστηκαν επιτυχώς!")
+                else:
+                    st.error("Παρουσιάστηκε σφάλμα κατά τον συγχρονισμό των Users.")
 
         with col3:
             if st.button("🧩 Sync Components", width='stretch'):
-                with st.spinner("Συγχρονισμός Components σε εξέλιξη..."):
-                    run_components_etl()
-                    run_jira_components_etl()
-                write_system_log(
-                    st.session_state.user_id, 
-                    "ETL_SYNC_COMPONENTS", 
-                    "Χειροκίνητος συγχρονισμός Components (Gemini & Jira)"
+                statement = (
+                    "from modules.test_components_etl import run_components_etl, run_jira_components_etl; "
+                    "print('[*] Syncing Gemini Components...'); run_components_etl(); "
+                    "print('[*] Syncing Jira Components...'); run_jira_components_etl(); "
+                    "print('[SUCCESS] Components synced successfully!')"
                 )
-                st.success("Τα Components συγχρονίστηκαν επιτυχώς!")
+                success = run_etl_subprocess_statement(statement, "Sync Components")
+                if success:
+                    write_system_log(
+                        st.session_state.user_id, 
+                        "ETL_SYNC_COMPONENTS", 
+                        "Χειροκίνητος συγχρονισμός Components (Gemini & Jira)"
+                    )
+                    st.success("Τα Components συγχρονίστηκαν επιτυχώς!")
+                else:
+                    st.error("Παρουσιάστηκε σφάλμα κατά τον συγχρονισμό των Components.")
 
         with col4:
             if st.button("🎫 Sync Issues", width='stretch', type="primary"):
-                with st.spinner("Incremental Sync (Issues, Comments, Worklogs) σε εξέλιξη..."):
-                    run_incremental_issues_and_children_etl()
-                    run_incremental_jira_etl()
-                write_system_log(
-                    st.session_state.user_id, 
-                    "ETL_SYNC_ISSUES", 
-                    "Χειροκίνητος incremental συγχρονισμός Issues & Children"
+                statement = (
+                    "from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl; "
+                    "print('[*] Syncing Gemini Issues & Children...'); run_incremental_issues_and_children_etl(); "
+                    "print('[*] Syncing Jira Issues...'); run_incremental_jira_etl(); "
+                    "print('[SUCCESS] Incremental sync completed successfully!')"
                 )
-                st.success("Το Incremental Sync ολοκληρώθηκε!")
+                success = run_etl_subprocess_statement(statement, "Sync Issues (Incremental)")
+                if success:
+                    write_system_log(
+                        st.session_state.user_id, 
+                        "ETL_SYNC_ISSUES", 
+                        "Χειροκίνητος incremental συγχρονισμός Issues & Children"
+                    )
+                    st.success("Το Incremental Sync ολοκληρώθηκε!")
+                else:
+                    st.error("Παρουσιάστηκε σφάλμα κατά τον incremental συγχρονισμό.")
 
     with tab_full_sync:
         st.write("Πλήρης Συγχρονισμός (Full Pipeline)")
@@ -3226,34 +3281,31 @@ def render_etl_manager_content():
         if st.button("🚀 ΕΚΚΙΝΗΣΗ FULL SYNC", type="primary"):
             start_time = time.time()
             
-            with st.status("Εκτέλεση Full Sync Pipeline...", expanded=True) as status:
-                st.write("Συγχρονισμός Projects...")
-                run_real_projects_etl()
-                run_jira_projects_etl()
-                
-                st.write("Συγχρονισμός Users...")
-                run_users_etl()
-                run_jira_users_etl()
-                
-                st.write("Συγχρονισμός Components...")
-                run_components_etl()
-                run_jira_components_etl()
-                
-                st.write("Συγχρονισμός Issues...")
-                run_incremental_issues_and_children_etl()
-                run_incremental_jira_etl()
-                
-                status.update(label="Το Full Sync Ολοκληρώθηκε!", state="complete", expanded=False)
-                
+            statement = (
+                "from modules.test_projects_etl import run_real_projects_etl, run_jira_projects_etl; "
+                "from modules.test_users_etl import run_users_etl, run_jira_users_etl; "
+                "from modules.test_components_etl import run_components_etl, run_jira_components_etl; "
+                "from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl; "
+                "print('[1/4] Syncing Projects...'); run_real_projects_etl(); run_jira_projects_etl(); "
+                "print('[2/4] Syncing Users...'); run_users_etl(); run_jira_users_etl(); "
+                "print('[3/4] Syncing Components...'); run_components_etl(); run_jira_components_etl(); "
+                "print('[4/4] Syncing Issues...'); run_incremental_issues_and_children_etl(); run_incremental_jira_etl(); "
+                "print('[SUCCESS] Full Sync Completed!')"
+            )
+            success = run_etl_subprocess_statement(statement, "Full Sync Pipeline")
+            
             end_time = time.time()
             mins, secs = divmod(int(end_time - start_time), 60)
             
-            write_system_log(
-                st.session_state.user_id, 
-                "ETL_FULL_SYNC", 
-                f"Εκτέλεση Full Sync Pipeline. Ολοκληρώθηκε επιτυχώς σε {mins}λ και {secs}δ."
-            )
-            st.success(f"🎉 Όλα τα δεδομένα συγχρονίστηκαν επιτυχώς σε {mins} λεπτά και {secs} δευτερόλεπτα!")
+            if success:
+                write_system_log(
+                    st.session_state.user_id, 
+                    "ETL_FULL_SYNC", 
+                    f"Εκτέλεση Full Sync Pipeline. Ολοκληρώθηκε επιτυχώς σε {mins}λ και {secs}δ."
+                )
+                st.success(f"🎉 Όλα τα δεδομένα συγχρονίστηκαν επιτυχώς σε {mins} λεπτά και {secs} δευτερόλεπτα!")
+            else:
+                st.error("Παρουσιάστηκε σφάλμα κατά την εκτέλεση του Full Sync Pipeline.")
 
     with tab_jira_full_sync:
         st.write("Πλήρης Συγχρονισμός Jira (Από Μηδέν)")
@@ -3262,30 +3314,31 @@ def render_etl_manager_content():
         if st.button("🚀 ΕΚΚΙΝΗΣΗ JIRA FULL SYNC", type="primary", key="jira_full_sync_btn"):
             start_time = time.time()
             
-            with st.status("Εκτέλεση Jira Full Sync Pipeline...", expanded=True) as status:
-                st.write("Συγχρονισμός Jira Projects...")
-                run_jira_projects_etl()
-                
-                st.write("Συγχρονισμός Jira Users...")
-                run_jira_users_etl()
-                
-                st.write("Συγχρονισμός Jira Components...")
-                run_jira_components_etl()
-                
-                st.write("Συγχρονισμός Jira Issues (Από Μηδέν)...")
-                run_incremental_jira_etl(ignore_last_sync=True)
-                
-                status.update(label="Ο Jira Full Συγχρονισμός Ολοκληρώθηκε!", state="complete", expanded=False)
-                
+            statement = (
+                "from modules.test_projects_etl import run_jira_projects_etl; "
+                "from modules.test_users_etl import run_jira_users_etl; "
+                "from modules.test_components_etl import run_jira_components_etl; "
+                "from modules.test_issues_etl import run_incremental_jira_etl; "
+                "print('[1/4] Syncing Jira Projects...'); run_jira_projects_etl(); "
+                "print('[2/4] Syncing Jira Users...'); run_jira_users_etl(); "
+                "print('[3/4] Syncing Jira Components...'); run_jira_components_etl(); "
+                "print('[4/4] Running Jira Full Sync (From scratch)...'); run_incremental_jira_etl(ignore_last_sync=True); "
+                "print('[SUCCESS] Jira Full Sync Completed!')"
+            )
+            success = run_etl_subprocess_statement(statement, "Jira Full Sync Pipeline")
+            
             end_time = time.time()
             mins, secs = divmod(int(end_time - start_time), 60)
             
-            write_system_log(
-                st.session_state.user_id, 
-                "ETL_JIRA_FULL_SYNC", 
-                f"Εκτέλεση Jira Full Sync Pipeline (ignore_last_sync = True). Ολοκληρώθηκε επιτυχώς σε {mins}λ και {secs}δ."
-            )
-            st.success(f"🎉 Όλα τα δεδομένα Jira συγχρονίστηκαν επιτυχώς από το μηδέν σε {mins} λεπτά και {secs} δευτερόλεπτα!")
+            if success:
+                write_system_log(
+                    st.session_state.user_id, 
+                    "ETL_JIRA_FULL_SYNC", 
+                    f"Εκτέλεση Jira Full Sync Pipeline (ignore_last_sync = True). Ολοκληρώθηκε επιτυχώς σε {mins}λ και {secs}δ."
+                )
+                st.success(f"🎉 Όλα τα δεδομένα Jira συγχρονίστηκαν επιτυχώς από το μηδέν σε {mins} λεπτά και {secs} δευτερόλεπτα!")
+            else:
+                st.error("Παρουσιάστηκε σφάλμα κατά την εκτέλεση του Jira Full Sync Pipeline.")
 
     with tab_dev_docs:
         doc_choice = st.radio(
