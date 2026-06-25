@@ -1,4 +1,4 @@
-# Developer Documentation - NSS Timesheet App v26.5.5c
+# Developer Documentation - NSS Timesheet App v26.5.6a
 
 Αυτό το έγγραφο περιέχει τις τεχνικές λεπτομέρειες, την αρχιτεκτονική και την τεκμηρίωση των μεθόδων της εφαρμογής **NSS Timesheet Dashboard**. Είναι σχεδιασμένο για developers που θέλουν να συντηρήσουν, να επεκτείνουν ή να αποσφαλματώσουν την εφαρμογή.
 
@@ -7,9 +7,9 @@
 ## 1. Αρχιτεκτονική Εφαρμογής & Ροή Δεδομένων
 
 Η εφαρμογή αποτελείται από τρία κύρια μέρη:
-1. **Front-end / Interactive Dashboard (Streamlit)**: Υλοποιείται στο αρχείο [timesheet.py](file:///c:/Users/d.batsilis/OneDrive%20-%20Epsilon%20Net%20S.A/Development/NSSTimesheetApp/timesheet.py). Παρέχει το γραφικό περιβάλλον χρήστη (GUI), τα φίλτρα, τα γραφήματα, τη διαχείριση χρηστών/ομάδων και τη Βάση Γνώσης (KB).
+1. **Front-end / Interactive Dashboard (Streamlit)**: Υλοποιείται στο αρχείο [timesheet.py](timesheet.py). Παρέχει το γραφικό περιβάλλον χρήστη (GUI), τα φίλτρα, τα γραφήματα, τη διαχείριση χρηστών/ομάδων και τη Βάση Γνώσης (KB).
 2. **Database (SQL Server)**: Αποθηκεύει όλα τα συγχρονισμένα δεδομένα (Projects, Users, Components, Issues, Worklogs, Comments, Audits), τις ρυθμίσεις των χρηστών, τα presets και τα logs της εφαρμογής.
-3. **ETL Pipelines (Python Modules)**: Βρίσκονται στον φάκελο [modules/](file:///c:/Users/d.batsilis/OneDrive%20-%20Epsilon%20Net%20S.A/Development/NSSTimesheetApp/modules) και εκτελούν τις διαδικασίες Extract-Transform-Load από τα APIs του Gemini και του Jira προς τον SQL Server.
+3. **ETL Pipelines (Python Modules)**: Βρίσκονται στον φάκελο [modules/](modules/) και εκτελούν τις διαδικασίες Extract-Transform-Load από τα APIs του Gemini και του Jira προς τον SQL Server.
 
 ### Ροή Συγχρονισμού ETL
 ```mermaid
@@ -63,6 +63,8 @@ graph TD
   * *Στήλες*: `TimeEntryID` (PK), `SourceApp` (PK), `IssueID`, `ProjectID`, `TimeEntryDate`, `TimeCreationDate`, `TimeResourceID`, `TimeHours`, `TimeMinutes`, `TimeComment`, `TimeTypeID`, `TimeTypeName`, `IssueComponent`.
 
 ### β. Πίνακες Μεταδεδομένων & Logs ETL
+* **`ETL_Queue`**: Ουρά διεργασιών ETL για ασύγχρονη (asynchronous) εκτέλεση στο παρασκήνιο.
+  * *Στήλες*: `JobID` (PK - IDENTITY), `JobType` (VARCHAR(50)), `IssueKey` (VARCHAR(50), NULL), `StartDate` (VARCHAR(50), NULL), `EndDate` (VARCHAR(50), NULL), `DateFilterType` (VARCHAR(20), NULL), `Status` (VARCHAR(20) - 'Pending'/'Running'/'Success'/'Failed'), `CreatedBy` (VARCHAR(100)), `CreatedAt` (DATETIME, default GETDATE()), `StartedAt` (DATETIME, NULL), `FinishedAt` (DATETIME, NULL), `LogFilePath` (NVARCHAR(255), NULL).
 * **`SyncMetadata`**: Καταγράφει την ημερομηνία τελευταίας εκτέλεσης του ETL ανά οντότητα.
   * *Στήλες*: `Id` (PK), `EntityName`, `LastSyncAt`.
 * **`SyncLog`**: Header logs εκτέλεσης του ETL pipeline.
@@ -72,7 +74,7 @@ graph TD
 
 ---
 
-## 4. Μέθοδοι & Συναρτήσεις στο [timesheet.py](file:///c:/Users/d.batsilis/OneDrive%20-%20Epsilon%20Net%20S.A/Development/NSSTimesheetApp/timesheet.py)
+## 4. Μέθοδοι & Συναρτήσεις στο [timesheet.py](timesheet.py)
 
 ### 4.1. Βοηθητικές Συναρτήσεις UI & Φιλτραρίσματος
 * **`on_only_me_click(username)`**: Callback που θέτει το φίλτρο Assignee αποκλειστικά στον τρέχοντα χρήστη.
@@ -164,36 +166,59 @@ graph TD
 
 ## 5. Μέθοδοι στα ETL Modules (Φάκελος `/modules`)
 
-### 5.1. [modules/test_projects_etl.py](file:///c:/Users/d.batsilis/OneDrive%20-%20Epsilon%20Net%20S.A/Development/NSSTimesheetApp/modules/test_projects_etl.py)
+### 5.1. [modules/test_projects_etl.py](modules/test_projects_etl.py)
 * **`run_real_projects_etl()`**: Αντλεί όλα τα projects από το Gemini API και τα αποθηκεύει στον πίνακα `GProjects`.
 * **`run_jira_projects_etl()`**: Αντλεί όλα τα projects από το Jira API. Φιλτράρει μόνο τα projects με κλειδιά: `PYLCOM`, `PYLFLE`, `PLINTS`, `PYFLDR`, `ESLKAS`, `GLXENT`. Τα αποθηκεύει στον `GProjects` με `SourceApp = 'Jira'`.
 
-### 5.2. [modules/test_users_etl.py](file:///c:/Users/d.batsilis/OneDrive%20-%20Epsilon%20Net%20S.A/Development/NSSTimesheetApp/modules/test_users_etl.py)
+### 5.2. [modules/test_users_etl.py](modules/test_users_etl.py)
 * **`run_users_etl()`**: Συγχρονίζει όλους τους ενεργούς χρήστες από το Gemini API στον πίνακα `GUsers`.
 * **`run_jira_users_etl()`**: Συγχρονίζει τους χρήστες από το Jira Cloud API στον πίνακα `GUsers`.
 
-### 5.3. [modules/test_components_etl.py](file:///c:/Users/d.batsilis/OneDrive%20-%20Epsilon%20Net%20S.A/Development/NSSTimesheetApp/modules/test_components_etl.py)
+### 5.3. [modules/test_components_etl.py](modules/test_components_etl.py)
 * **`run_components_etl()`**: Συγχρονίζει τα components των projects από το Gemini.
 * **`run_jira_components_etl()`**: Συγχρονίζει τα components των Jira projects.
 
-### 5.4. [modules/test_issues_etl.py](file:///c:/Users/d.batsilis/OneDrive%20-%20Epsilon%20Net%20S.A/Development/NSSTimesheetApp/modules/test_issues_etl.py)
+### 5.4. [modules/test_issues_etl.py](modules/test_issues_etl.py)
 * **`run_incremental_issues_and_children_etl()`**: Εκτελεί incremental συγχρονισμό για τα Gemini Issues, Comments, Audits (History), Custom Fields και Time Trackings. Ελέγχει την ημερομηνία `last_sync` και φέρνει μόνο τα τροποποιημένα/νέα στοιχεία.
 * **`run_incremental_jira_etl(ignore_last_sync=False)`**: Εκτελεί incremental συγχρονισμό για τα Jira Issues.
   * **`ignore_last_sync=True` (Jira Full Sync)**: Παρακάμπτει την ημερομηνία τελευταίου συγχρονισμού και θέτει ως αρχική ημερομηνία την `2000-01-01`, κάνοντας λήψη όλων των δεδομένων από το μηδέν.
-  * Φιλτράρει τα issues βάσει των Jira Projects και του JQL query: `product name[dropdown] IN ("PYLON COMMERCIAL", "PYLON ERP", "PYLON FLEX", "Galaxy Enterprise")`.
+  * Φιλτράρει τα issues βάσει των Jira Projects και του JQL query: `(product name[dropdown] IN ("PYLON COMMERCIAL", "PYLON ERP", "PYLON FLEX", "Galaxy Enterprise") OR product name[dropdown] IS EMPTY)`.
 * **`run_single_jira_issue_sync(issue_key)`**: Συγχρονίζει ένα συγκεκριμένο Jira Issue με βάση το IssueKey (π.χ. `PYLCOM-1259`). Εκτελεί όλα τα επιμέρους βήματα (σύνδεση, λήψη raw δεδομένων, transform για Issues, Audits, Custom Fields, Comments, Worklogs και upsert loaders στη βάση δεδομένων) με αναλυτικό step-by-step logging για σκοπούς debugging. Εξασφαλίζει επίσης την κωδικοποίηση της κονσόλας σε UTF-8 για την αποφυγή encoding σφαλμάτων σε Windows locale.
+* **`run_jira_date_range_sync(start_date_str, end_date_str, date_type='updated')`**: Συγχρονίζει τα Jira Issues που δημιουργήθηκαν ή ενημερώθηκαν σε ένα συγκεκριμένο ημερομηνιακό διάστημα. Κατασκευάζει JQL ερώτημα φιλτράροντας με βάση το πεδίο `updated` ή `created` του Jira.
 
-### 5.5. [modules/test_comments_etl.py](file:///c:/Users/d.batsilis/OneDrive%20-%20Epsilon%20Net%20S.A/Development/NSSTimesheetApp/modules/test_comments_etl.py)
+### 5.5. [modules/test_comments_etl.py](modules/test_comments_etl.py)
 * **`run_incremental_comments_etl()`**: Εκτελεί μεμονωμένο incremental συγχρονισμό για τα σχόλια (Comments) των Issues.
+
+### 5.6. [etl_worker.py](etl_worker.py)
+* **Background Worker**: Ένας αυτόνομος daemon που εκτελείται συνεχώς (polling loop ανά 3 δευτερόλεπτα) στον server. 
+  * Αντλεί το παλαιότερο job με κατάσταση `Pending` από τον πίνακα `ETL_Queue`.
+  * Εξασφαλίζει ότι εκτελείται μόνο ένα job τη φορά για την αποφυγή locks στη βάση.
+  * Εκκινεί ένα ξεχωριστό subprocess (Python με unbuffered flag `-u` και εξαναγκασμένο `PYTHONIOENCODING=utf-8`) για την απομόνωση της εκτέλεσης.
+  * Κατευθύνει τα live logs της διεργασίας σε αρχείο log στη διαδρομή `logs/etl_job_<JobID>.log`.
+  * Ενημερώνει την κατάσταση του job σε `Running`, `Success` ή `Failed` ανάλογα με το exit code του subprocess.
 
 ---
 
 ## 6. Διαδικασία Συντήρησης & Rerun
 
 1. **Προσθήκη νέου Custom Field (Jira)**: 
-   Για να προστεθεί ένα νέο custom field στο συγχρονισμό του Jira, απλά προσθέστε το όνομα και το ID του στο αρχείο [jira_custom_fields.csv](file:///c:/Users/d.batsilis/OneDrive%20-%20Epsilon%20Net%20S.A/Development/NSSTimesheetApp/jira_custom_fields.csv). Το ETL θα το διαβάσει αυτόματα στην επόμενη εκτέλεση.
+   Για να προστεθεί ένα νέο custom field στο συγχρονισμό του Jira, απλά προσθέστε το όνομα και το ID του στο αρχείο [jira_custom_fields.csv](jira_custom_fields.csv). Το ETL θα το διαβάσει αυτόματα στην επόμενη εκτέλεση.
 2. **Rerun από το μηδέν (Jira)**:
    Αν για οποιοδήποτε λόγο χαθούν δεδομένα ή χρειαστεί πλήρης επανασυγχρονισμός, χρησιμοποιήστε το tab **Jira Full Sync (Από Μηδέν)** στον ETL Manager της εφαρμογής.
 3. **Αποσφαλμάτωση Μεμονωμένου Εισιτηρίου (Jira Debugger)**:
    Αν κάποιο συγκεκριμένο Jira Issue εμφανίζει κενά δεδομένα ή σφάλματα συγχρονισμού, μεταβείτε στο tab **🔍 ETL Debugger** στον ETL Manager. Εισάγετε το Issue Key (π.χ. `PYLCOM-1259`) και πατήστε το κουμπί συγχρονισμού. Το ETL θα εκτελέσει απομονωμένα όλα τα βήματα λήψης, μετασχηματισμού και αποθήκευσης, εμφανίζοντας live-streaming logs και stack traces σφαλμάτων στην οθόνη.
+4. **Εκτέλεση του Background Worker**:
+   Ο background worker πρέπει να τρέχει συνεχώς στον server για να επεξεργάζεται την ουρά. 
+   - **Χειροκίνητη εκκίνηση**: Από το root directory της εφαρμογής, εκτελέστε:
+     ```powershell
+     python etl_worker.py
+     ```
+   - **Ρύθμιση ως Windows Service**: Για παραγωγική λειτουργία (production), προτείνεται η εγκατάσταση του `etl_worker.py` ως Windows Service χρησιμοποιώντας το εργαλείο **NSSM (Non-Sucking Service Manager)**:
+     ```powershell
+     nssm install NSSTimesheetWorker "C:\Users\d.batsilis\AppData\Local\Programs\Python\Python314\python.exe" "C:\Users\d.batsilis\OneDrive - Epsilon Net S.A\Development\NSSTimesheetApp\etl_worker.py"
+     nssm set NSSTimesheetWorker AppDirectory "C:\Users\d.batsilis\OneDrive - Epsilon Net S.A\Development\NSSTimesheetApp"
+     nssm start NSSTimesheetWorker
+     ```
+5. **📅 Συγχρονισμός με Ημερομηνιακό Εύρος**:
+   Αν παρατηρηθεί απώλεια δεδομένων για συγκεκριμένο χρονικό διάστημα (π.χ. λόγω διακοπής ρεύματος ή δικτύου), μπορείτε να χρησιμοποιήσετε το tab **📅 Date Range Sync** στον ETL Manager. Επιλέξτε το διάστημα και τον τύπο ημερομηνίας (Updated/Created) για να αναγκάσετε το ETL να τραβήξει και να κάνει upsert όλα τα σχετικά issues.
 

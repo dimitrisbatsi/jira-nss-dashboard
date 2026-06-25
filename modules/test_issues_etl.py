@@ -200,7 +200,7 @@ def run_incremental_jira_etl(ignore_last_sync=False):
         jql_query = (
             f'project IN ({projects_jql_str}) '
             f'AND updated >= "{last_sync_str}" '
-            f'AND "product name[dropdown]" IN ("PYLON COMMERCIAL", "PYLON ERP", "PYLON FLEX", "Galaxy Enterprise") '
+            f'AND ("product name[dropdown]" IN ("PYLON COMMERCIAL", "PYLON ERP", "PYLON FLEX", "Galaxy Enterprise") OR "product name[dropdown]" IS EMPTY) '
             f'ORDER BY updated ASC'
         )
 
@@ -329,6 +329,117 @@ def get_dynamic_jira_fields(csv_filename: str = "jira_custom_fields.csv"):
         
     final_fields = list(set(base_fields + cf_list))
     return ",".join(final_fields), cf_mapping
+
+def run_jira_date_range_sync(start_date_str: str, end_date_str: str, date_type: str = 'updated'):
+    """
+    Συγχρονίζει Jira Issues που δημιουργήθηκαν ή ενημερώθηκαν σε ένα συγκεκριμένο ημερομηνιακό διάστημα.
+    JQL: project IN (...) AND <date_type> >= "start_date" AND <date_type> <= "end_date"
+    """
+    entity_name = f"Jira_DateRange_{date_type.capitalize()}"
+    client = JiraAPIClient()
+    print(f"\n--- Ξεκινάει ο Συγχρονισμός Jira Issues βάσει Ημερομηνιών ({date_type}) ---")
+    print(f"[*] Διάστημα: {start_date_str} έως {end_date_str}")
+
+    with get_db_session() as session:
+        sync_log = create_sync_session_log(session, entity_name=entity_name)
+        sync_has_errors = False 
+
+        query = text("SELECT ProjectCode FROM GProjects WHERE SourceApp = 'Jira'")
+        jira_projects = []
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(query)
+                jira_projects = [row[0] for row in result if row[0]]
+        except Exception as e:
+            log_error(session, sync_log.ID, "DBRead", f"Failed to read Jira Projects: {e}", traceback.format_exc())
+            sync_log.Status = "Failed"
+            sync_log.FinishedAt = datetime.utcnow()
+            session.commit()
+            return False
+
+        if not jira_projects:
+            sync_log.Status = "Skipped"
+            sync_log.FinishedAt = datetime.utcnow()
+            session.commit()
+            print("[*] Δεν βρέθηκαν Jira Projects στη βάση.")
+            return False
+
+        projects_jql_str = ", ".join(jira_projects)
+        
+        jql_query = (
+            f'project IN ({projects_jql_str}) '
+            f'AND {date_type} >= "{start_date_str}" '
+            f'AND {date_type} <= "{end_date_str}" '
+            f'AND ("product name[dropdown]" IN ("PYLON COMMERCIAL", "PYLON ERP", "PYLON FLEX", "Galaxy Enterprise") OR "product name[dropdown]" IS EMPTY) '
+            f'ORDER BY {date_type} ASC'
+        )
+
+        print(f"[*] JQL Query: {jql_query}")
+        my_fields, custom_fields_mapping = get_dynamic_jira_fields("jira_custom_fields.csv")
+
+        try:
+            generator = client.get_issues_chunked(jql_query=jql_query, expand="changelog", chunk_size=50, requested_fields=my_fields)
+            
+            total_fetched = 0
+            for chunk_of_issues in generator:
+                chunk_issues, chunk_audits, chunk_custom_fields, chunk_comments, chunk_time_trackings = [], [], [], [], []
+                
+                for raw_issue in tqdm(chunk_of_issues, desc="Processing Jira Date Range Chunk"):
+                    issue_key = raw_issue.get('key', 'Unknown')
+                    try:
+                        # ISSUE
+                        issue_obj = transform_jira_issue(raw_issue)
+                        chunk_issues.append(issue_obj.model_dump())
+                        
+                        # AUDITS
+                        for audit_obj in transform_jira_audits(raw_issue):
+                            chunk_audits.append(audit_obj.model_dump())
+
+                        # CUSTOM FIELDS
+                        for cf_obj in transform_jira_custom_fields(raw_issue, custom_fields_mapping):
+                            if cf_obj.CustomFieldID != 0: 
+                                chunk_custom_fields.append(cf_obj.model_dump())
+                            
+                        # COMMENTS
+                        for comment_obj in transform_jira_comments(raw_issue):
+                            chunk_comments.append(comment_obj.model_dump())
+
+                        # TIME TRACKINGS
+                        for time_obj in transform_jira_time_trackings(raw_issue):
+                            chunk_time_trackings.append(time_obj.model_dump())
+                        
+                    except Exception as e:
+                        log_error(session, sync_log.ID, issue_key, f"Jira Transform Error: {e}", traceback.format_exc())
+                        sync_has_errors = True
+                
+                # UPSERTS
+                try:
+                    if chunk_issues:
+                        upsert_issues(pd.DataFrame(chunk_issues).drop_duplicates(subset=['IssueID', 'SourceApp'], keep='last'), engine)
+                    if chunk_audits:
+                        upsert_audits(pd.DataFrame(chunk_audits).drop_duplicates(subset=['AuditID', 'SourceApp'], keep='last'), engine)
+                    if chunk_custom_fields:
+                        upsert_custom_fields(pd.DataFrame(chunk_custom_fields).drop_duplicates(subset=['IssueID', 'CustomFieldID', 'SourceApp'], keep='last'), engine)
+                    if chunk_comments:
+                        upsert_comments(pd.DataFrame(chunk_comments).drop_duplicates(subset=['CommentID', 'SourceApp'], keep='last'), engine)
+                    if chunk_time_trackings:
+                        upsert_time_tracking(pd.DataFrame(chunk_time_trackings).drop_duplicates(subset=['TimeEntryID', 'SourceApp'], keep='last'), engine)
+                    total_fetched += len(chunk_issues)
+                except Exception as e:
+                    log_error(session, sync_log.ID, "BatchUpsert-JiraRange", f"Jira Upsert Error: {e}", traceback.format_exc())
+                    sync_has_errors = True
+
+            print(f"[*] Ολοκληρώθηκε ο συγχρονισμός! Συνολικά ενημερώθηκαν {total_fetched} issues.")
+
+        except Exception as e:
+            log_error(session, sync_log.ID, "General-JiraRange", f"Critical Jira Date Range Sync Error: {e}", traceback.format_exc())
+            sync_has_errors = True
+
+        # --- ΚΛΕΙΣΙΜΟ SYNC LOG (Αποκλειστικά με Raw SQL) ---
+        final_status = "Completed with Errors" if sync_has_errors else "Completed"
+        close_sync_session_log(session, sync_log.ID, final_status)
+        
+        return not sync_has_errors
 
 def run_single_jira_issue_sync(issue_key: str):
     """

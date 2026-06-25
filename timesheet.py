@@ -18,7 +18,7 @@ from modules.test_users_etl import run_users_etl, run_jira_users_etl
 from modules.test_components_etl import run_components_etl, run_jira_components_etl
 from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl
 
-APP_VERSION = "26.5.5c (2026-06-24)"
+APP_VERSION = "26.5.6a (2026-06-25)"
 
 # --- Helper functions for state updates ---
 def on_only_me_click(username):
@@ -318,6 +318,30 @@ def get_db_engine():
             except Exception:
                 pass
                 
+            # Ensure ETL_Queue table exists in database
+            try:
+                with engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        "IF OBJECT_ID('ETL_Queue', 'U') IS NULL "
+                        "BEGIN "
+                        "    CREATE TABLE ETL_Queue ( "
+                        "        JobID INT IDENTITY(1,1) PRIMARY KEY, "
+                        "        JobType VARCHAR(50) NOT NULL, "
+                        "        IssueKey VARCHAR(50) NULL, "
+                        "        StartDate VARCHAR(50) NULL, "
+                        "        EndDate VARCHAR(50) NULL, "
+                        "        DateFilterType VARCHAR(20) NULL, "
+                        "        Status VARCHAR(20) NOT NULL, "
+                        "        CreatedBy VARCHAR(100) NOT NULL, "
+                        "        CreatedAt DATETIME DEFAULT GETDATE(), "
+                        "        StartedAt DATETIME NULL, "
+                        "        FinishedAt DATETIME NULL, "
+                        "        LogFilePath NVARCHAR(255) NULL "
+                        "    ); "
+                        "END"
+                    )
+            except Exception:
+                pass
             # Ensure System_Logs table exists
             try:
                 with engine.begin() as conn:
@@ -3195,16 +3219,43 @@ def run_etl_subprocess_statement(statement_str, description):
     process.wait()
     return process.returncode == 0
 
+def queue_etl_job(job_type, issue_key=None, start_date=None, end_date=None, date_type=None, created_by=None):
+    engine = get_db_engine()
+    if not engine:
+        return None
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            query = text("""
+                INSERT INTO ETL_Queue (JobType, IssueKey, StartDate, EndDate, DateFilterType, Status, CreatedBy)
+                OUTPUT INSERTED.JobID
+                VALUES (:job_type, :issue_key, :start_date, :end_date, :date_type, 'Pending', :created_by)
+            """)
+            row = conn.execute(query, {
+                "job_type": job_type,
+                "issue_key": issue_key,
+                "start_date": start_date,
+                "end_date": end_date,
+                "date_type": date_type,
+                "created_by": created_by or "System"
+            }).fetchone()
+            if row:
+                return row[0]
+    except Exception as e:
+        st.error(f"Σφάλμα κατά την καταχώρηση της εργασίας στην ουρά: {e}")
+        return None
+
 def render_etl_manager_content():
     st.subheader("🚀 Data Warehouse ETL Manager", divider="blue")
     st.markdown("Διαχειριστικό περιβάλλον για τον συγχρονισμό δεδομένων από Gemini και Jira στο SQL Server.")
 
     # Δημιουργία Tabs (Καρτέλες) μέσα στο κυρίως Tab του μενού
-    tab_actions, tab_full_sync, tab_jira_full_sync, tab_debugger, tab_dev_docs = st.tabs([
+    tab_actions, tab_full_sync, tab_jira_full_sync, tab_debugger, tab_queue_monitor, tab_dev_docs = st.tabs([
         "⚡ Μεμονωμένες Ενέργειες", 
         "📦 Μαζικός Συγχρονισμός", 
         "🎫 Jira Full Sync (Από Μηδέν)",
-        "🔍 ETL Debugger",
+        "🔍 ETL Debugger & Sync",
+        "🖥️ ETL Job Monitor",
         "📖 Dev Docs"
     ])
 
@@ -3215,184 +3266,259 @@ def render_etl_manager_content():
         
         with col1:
             if st.button("🏢 Sync Projects", width='stretch'):
-                statement = (
-                    "from modules.test_projects_etl import run_real_projects_etl, run_jira_projects_etl; "
-                    "print('[*] Syncing Gemini Projects...'); run_real_projects_etl(); "
-                    "print('[*] Syncing Jira Projects...'); run_jira_projects_etl(); "
-                    "print('[SUCCESS] Projects synced successfully!')"
-                )
-                success = run_etl_subprocess_statement(statement, "Sync Projects")
-                if success:
+                job_id = queue_etl_job('SYNC_PROJECTS', created_by=st.session_state.user_id)
+                if job_id:
                     write_system_log(
                         st.session_state.user_id, 
-                        "ETL_SYNC_PROJECTS", 
-                        "Χειροκίνητος συγχρονισμός Projects (Gemini & Jira)"
+                        "ETL_QUEUE_PROJECTS", 
+                        f"Καταχώρηση στην ουρά εργασίας συγχρονισμού Projects (Job ID: #{job_id})"
                     )
-                    st.success("Τα Projects συγχρονίστηκαν επιτυχώς!")
+                    st.success(f"🎉 Η εργασία συγχρονισμού Projects καταχωρήθηκε στην ουρά (Job ID: #{job_id}).")
+                    st.rerun()
                 else:
-                    st.error("Παρουσιάστηκε σφάλμα κατά τον συγχρονισμό των Projects.")
+                    st.error("Αποτυχία καταχώρησης της εργασίας στην ουρά.")
 
         with col2:
             if st.button("👥 Sync Users", width='stretch'):
-                statement = (
-                    "from modules.test_users_etl import run_users_etl, run_jira_users_etl; "
-                    "print('[*] Syncing Gemini Users...'); run_users_etl(); "
-                    "print('[*] Syncing Jira Users...'); run_jira_users_etl(); "
-                    "print('[SUCCESS] Users synced successfully!')"
-                )
-                success = run_etl_subprocess_statement(statement, "Sync Users")
-                if success:
+                job_id = queue_etl_job('SYNC_USERS', created_by=st.session_state.user_id)
+                if job_id:
                     write_system_log(
                         st.session_state.user_id, 
-                        "ETL_SYNC_USERS", 
-                        "Χειροκίνητος συγχρονισμός Users (Gemini & Jira)"
+                        "ETL_QUEUE_USERS", 
+                        f"Καταχώρηση στην ουρά εργασίας συγχρονισμού Users (Job ID: #{job_id})"
                     )
-                    st.success("Οι Users συγχρονίστηκαν επιτυχώς!")
+                    st.success(f"🎉 Η εργασία συγχρονισμού Users καταχωρήθηκε στην ουρά (Job ID: #{job_id}).")
+                    st.rerun()
                 else:
-                    st.error("Παρουσιάστηκε σφάλμα κατά τον συγχρονισμό των Users.")
+                    st.error("Αποτυχία καταχώρησης της εργασίας στην ουρά.")
 
         with col3:
             if st.button("🧩 Sync Components", width='stretch'):
-                statement = (
-                    "from modules.test_components_etl import run_components_etl, run_jira_components_etl; "
-                    "print('[*] Syncing Gemini Components...'); run_components_etl(); "
-                    "print('[*] Syncing Jira Components...'); run_jira_components_etl(); "
-                    "print('[SUCCESS] Components synced successfully!')"
-                )
-                success = run_etl_subprocess_statement(statement, "Sync Components")
-                if success:
+                job_id = queue_etl_job('SYNC_COMPONENTS', created_by=st.session_state.user_id)
+                if job_id:
                     write_system_log(
                         st.session_state.user_id, 
-                        "ETL_SYNC_COMPONENTS", 
-                        "Χειροκίνητος συγχρονισμός Components (Gemini & Jira)"
+                        "ETL_QUEUE_COMPONENTS", 
+                        f"Καταχώρηση στην ουρά εργασίας συγχρονισμού Components (Job ID: #{job_id})"
                     )
-                    st.success("Τα Components συγχρονίστηκαν επιτυχώς!")
+                    st.success(f"🎉 Η εργασία συγχρονισμού Components καταχωρήθηκε στην ουρά (Job ID: #{job_id}).")
+                    st.rerun()
                 else:
-                    st.error("Παρουσιάστηκε σφάλμα κατά τον συγχρονισμό των Components.")
+                    st.error("Αποτυχία καταχώρησης της εργασίας στην ουρά.")
 
         with col4:
             if st.button("🎫 Sync Issues", width='stretch', type="primary"):
-                statement = (
-                    "from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl; "
-                    "print('[*] Syncing Gemini Issues & Children...'); run_incremental_issues_and_children_etl(); "
-                    "print('[*] Syncing Jira Issues...'); run_incremental_jira_etl(); "
-                    "print('[SUCCESS] Incremental sync completed successfully!')"
-                )
-                success = run_etl_subprocess_statement(statement, "Sync Issues (Incremental)")
-                if success:
+                job_id = queue_etl_job('SYNC_ISSUES_INCREMENTAL', created_by=st.session_state.user_id)
+                if job_id:
                     write_system_log(
                         st.session_state.user_id, 
-                        "ETL_SYNC_ISSUES", 
-                        "Χειροκίνητος incremental συγχρονισμός Issues & Children"
+                        "ETL_QUEUE_ISSUES", 
+                        f"Καταχώρηση στην ουρά εργασίας incremental συγχρονισμού Issues & Children (Job ID: #{job_id})"
                     )
-                    st.success("Το Incremental Sync ολοκληρώθηκε!")
+                    st.success(f"🎉 Η εργασία incremental συγχρονισμού Issues καταχωρήθηκε στην ουρά (Job ID: #{job_id}).")
+                    st.rerun()
                 else:
-                    st.error("Παρουσιάστηκε σφάλμα κατά τον incremental συγχρονισμό.")
+                    st.error("Αποτυχία καταχώρησης της εργασίας στην ουρά.")
 
     with tab_full_sync:
         st.write("Πλήρης Συγχρονισμός (Full Pipeline)")
         st.info("Εκτελείται με την ασφαλή σειρά: Projects ➔ Users ➔ Components ➔ Issues")
         
         if st.button("🚀 ΕΚΚΙΝΗΣΗ FULL SYNC", type="primary"):
-            start_time = time.time()
-            
-            statement = (
-                "from modules.test_projects_etl import run_real_projects_etl, run_jira_projects_etl; "
-                "from modules.test_users_etl import run_users_etl, run_jira_users_etl; "
-                "from modules.test_components_etl import run_components_etl, run_jira_components_etl; "
-                "from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl; "
-                "print('[1/4] Syncing Projects...'); run_real_projects_etl(); run_jira_projects_etl(); "
-                "print('[2/4] Syncing Users...'); run_users_etl(); run_jira_users_etl(); "
-                "print('[3/4] Syncing Components...'); run_components_etl(); run_jira_components_etl(); "
-                "print('[4/4] Syncing Issues...'); run_incremental_issues_and_children_etl(); run_incremental_jira_etl(); "
-                "print('[SUCCESS] Full Sync Completed!')"
-            )
-            success = run_etl_subprocess_statement(statement, "Full Sync Pipeline")
-            
-            end_time = time.time()
-            mins, secs = divmod(int(end_time - start_time), 60)
-            
-            if success:
+            job_id = queue_etl_job('FULL_SYNC', created_by=st.session_state.user_id)
+            if job_id:
                 write_system_log(
                     st.session_state.user_id, 
-                    "ETL_FULL_SYNC", 
-                    f"Εκτέλεση Full Sync Pipeline. Ολοκληρώθηκε επιτυχώς σε {mins}λ και {secs}δ."
+                    "ETL_QUEUE_FULL_SYNC", 
+                    f"Καταχώρηση στην ουρά εργασίας Full Sync Pipeline (Job ID: #{job_id})"
                 )
-                st.success(f"🎉 Όλα τα δεδομένα συγχρονίστηκαν επιτυχώς σε {mins} λεπτά και {secs} δευτερόλεπτα!")
+                st.success(f"🎉 Η εργασία Full Sync Pipeline καταχωρήθηκε στην ουρά (Job ID: #{job_id}).")
+                st.rerun()
             else:
-                st.error("Παρουσιάστηκε σφάλμα κατά την εκτέλεση του Full Sync Pipeline.")
+                st.error("Αποτυχία καταχώρησης της εργασίας στην ουρά.")
 
     with tab_jira_full_sync:
         st.write("Πλήρης Συγχρονισμός Jira (Από Μηδέν)")
         st.info("Συγχρονίζει μόνο τις Jira οντότητες (Projects ➔ Users ➔ Components ➔ Issues) από το μηδέν, αγνοώντας την ημερομηνία τελευταίου συγχρονισμού.")
         
         if st.button("🚀 ΕΚΚΙΝΗΣΗ JIRA FULL SYNC", type="primary", key="jira_full_sync_btn"):
-            start_time = time.time()
-            
-            statement = (
-                "from modules.test_projects_etl import run_jira_projects_etl; "
-                "from modules.test_users_etl import run_jira_users_etl; "
-                "from modules.test_components_etl import run_jira_components_etl; "
-                "from modules.test_issues_etl import run_incremental_jira_etl; "
-                "print('[1/4] Syncing Jira Projects...'); run_jira_projects_etl(); "
-                "print('[2/4] Syncing Jira Users...'); run_jira_users_etl(); "
-                "print('[3/4] Syncing Jira Components...'); run_jira_components_etl(); "
-                "print('[4/4] Running Jira Full Sync (From scratch)...'); run_incremental_jira_etl(ignore_last_sync=True); "
-                "print('[SUCCESS] Jira Full Sync Completed!')"
-            )
-            success = run_etl_subprocess_statement(statement, "Jira Full Sync Pipeline")
-            
-            end_time = time.time()
-            mins, secs = divmod(int(end_time - start_time), 60)
-            
-            if success:
+            job_id = queue_etl_job('JIRA_FULL_SYNC', created_by=st.session_state.user_id)
+            if job_id:
                 write_system_log(
                     st.session_state.user_id, 
-                    "ETL_JIRA_FULL_SYNC", 
-                    f"Εκτέλεση Jira Full Sync Pipeline (ignore_last_sync = True). Ολοκληρώθηκε επιτυχώς σε {mins}λ και {secs}δ."
+                    "ETL_QUEUE_JIRA_FULL_SYNC", 
+                    f"Καταχώρηση στην ουρά εργασίας Jira Full Sync Pipeline (Job ID: #{job_id})"
                 )
-                st.success(f"🎉 Όλα τα δεδομένα Jira συγχρονίστηκαν επιτυχώς από το μηδέν σε {mins} λεπτά και {secs} δευτερόλεπτα!")
+                st.success(f"🎉 Η εργασία Jira Full Sync Pipeline καταχωρήθηκε στην ουρά (Job ID: #{job_id}).")
+                st.rerun()
             else:
-                st.error("Παρουσιάστηκε σφάλμα κατά την εκτέλεση του Jira Full Sync Pipeline.")
+                st.error("Αποτυχία καταχώρησης της εργασίας στην ουρά.")
 
     with tab_debugger:
-        st.write("🔍 Διάγνωση & Συγχρονισμός Μεμονωμένου Issue")
-        st.info(
-            "Χρησιμοποιήστε αυτή την ενότητα για να ελέγξετε αν κάποιο συγκεκριμένο Jira Issue συγχρονίζεται σωστά. "
-            "Η κονσόλα θα εμφανίσει αναλυτικές πληροφορίες μετασχηματισμού και τυχόν σφάλματα (stack traces)."
-        )
+        col_debug1, col_debug2 = st.columns(2)
         
-        # Πεδίο κειμένου για την εισαγωγή του Key
-        debug_issue_key = st.text_input(
-            "Jira Issue Key (π.χ. PYLCOM-536):", 
-            placeholder="Εισάγετε το Key του εισιτηρίου...",
-            key="etl_debug_issue_key"
-        ).strip()
-        
-        if st.button("🔄 Συγχρονισμός & Debugging Issue", type="primary", key="etl_debug_sync_btn"):
-            if not debug_issue_key:
-                st.warning("Παρακαλώ εισάγετε ένα έγκυρο Issue Key (π.χ. PYLCOM-536) πριν ξεκινήσετε.")
-            else:
-                start_time = time.time()
-                statement = (
-                    "from modules.test_issues_etl import run_single_jira_issue_sync; "
-                    f"success = run_single_jira_issue_sync('{debug_issue_key}'); "
-                    "import sys; sys.exit(0 if success else 1)"
-                )
-                success = run_etl_subprocess_statement(statement, f"Debug Sync Issue '{debug_issue_key}'")
-                
-                end_time = time.time()
-                elapsed = int(end_time - start_time)
-                
-                if success:
-                    write_system_log(
-                        st.session_state.user_id, 
-                        "ETL_DEBUG_ISSUE_SYNC", 
-                        f"Επιτυχής διαγνωστικός συγχρονισμός του Issue '{debug_issue_key}' σε {elapsed}δ."
-                    )
-                    st.success(f"🎉 Ο συγχρονισμός του Issue '{debug_issue_key}' ολοκληρώθηκε με επιτυχία!")
+        with col_debug1:
+            st.write("🔍 Διάγνωση & Συγχρονισμός Μεμονωμένου Issue")
+            st.info(
+                "Χρησιμοποιήστε αυτή την ενότητα για να ελέγξετε αν κάποιο συγκεκριμένο Jira Issue συγχρονίζεται σωστά. "
+                "Η κονσόλα στον Job Monitor θα εμφανίσει αναλυτικές πληροφορίες μετασχηματισμού και τυχόν σφάλματα (stack traces)."
+            )
+            
+            # Πεδίο κειμένου για την εισαγωγή του Key
+            debug_issue_key = st.text_input(
+                "Jira Issue Key (π.χ. PYLCOM-536):", 
+                placeholder="Εισάγετε το Key του εισιτηρίου...",
+                key="etl_debug_issue_key"
+            ).strip()
+            
+            if st.button("🔄 Συγχρονισμός & Debugging Issue", type="primary", key="etl_debug_sync_btn"):
+                if not debug_issue_key:
+                    st.warning("Παρακαλώ εισάγετε ένα έγκυρο Issue Key (π.χ. PYLCOM-536) πριν ξεκινήσετε.")
                 else:
-                    st.error(f"❌ Ο συγχρονισμός του Issue '{debug_issue_key}' απέτυχε. Δείτε τα σφάλματα στην παραπάνω κονσόλα.")
+                    job_id = queue_etl_job('SINGLE_ISSUE_SYNC', issue_key=debug_issue_key, created_by=st.session_state.user_id)
+                    if job_id:
+                        write_system_log(
+                            st.session_state.user_id, 
+                            "ETL_QUEUE_DEBUG_ISSUE", 
+                            f"Καταχώρηση στην ουρά εργασίας συγχρονισμού μεμονωμένου Issue '{debug_issue_key}' (Job ID: #{job_id})"
+                        )
+                        st.success(f"🎉 Η εργασία συγχρονισμού του Issue '{debug_issue_key}' καταχωρήθηκε στην ουρά (Job ID: #{job_id}).")
+                        st.rerun()
+                    else:
+                        st.error("Αποτυχία καταχώρησης της εργασίας στην ουρά.")
+
+        with col_debug2:
+            st.write("📅 Συγχρονισμός Jira Issues βάσει Ημερομηνιών")
+            st.info(
+                "Συγχρονίζει όλα τα Jira Issues που είχαν δραστηριότητα ή δημιουργήθηκαν κατά το επιλεγμένο διάστημα. "
+                "Η ενέργεια θα προστεθεί στην ουρά και θα εκτελεστεί αυτόματα από τον Background Worker."
+            )
+            
+            # Date pickers
+            col_start, col_end = st.columns(2)
+            with col_start:
+                range_start_date = st.date_input("Ημερομηνία Έναρξης (Start Date):", key="etl_range_start_date")
+            with col_end:
+                range_end_date = st.date_input("Ημερομηνία Λήξης (End Date):", key="etl_range_end_date")
+                
+            # Date filter type radio
+            range_date_type = st.radio(
+                "Φιλτράρισμα βάσει ημερομηνίας:",
+                ["Τελευταίας Ενημέρωσης (Updated - Προτείνεται)", "Δημιουργίας (Created)"],
+                key="etl_range_date_type",
+                horizontal=True
+            )
+            
+            date_type_val = "updated" if "Updated" in range_date_type or "Ενημέρωσης" in range_date_type else "created"
+            
+            if st.button("📅 Ουρά συγχρονισμού εύρους ημερομηνιών", type="primary", key="etl_range_sync_btn"):
+                if range_start_date > range_end_date:
+                    st.error("Η ημερομηνία έναρξης δεν μπορεί να είναι μεταγενέστερη της ημερομηνίας λήξης.")
+                else:
+                    start_str = f"{range_start_date} 00:00"
+                    end_str = f"{range_end_date} 23:59"
+                    
+                    job_id = queue_etl_job(
+                        job_type='DATE_RANGE_SYNC',
+                        start_date=start_str,
+                        end_date=end_str,
+                        date_type=date_type_val,
+                        created_by=st.session_state.user_id
+                    )
+                    if job_id:
+                        write_system_log(
+                            st.session_state.user_id, 
+                            "ETL_QUEUE_DATE_RANGE_SYNC", 
+                            f"Καταχώρηση στην ουρά εργασίας συγχρονισμού Jira Issues εύρους ημερομηνιών ({start_str} - {end_str}) (Job ID: #{job_id})"
+                        )
+                        st.success(f"🎉 Η εργασία συγχρονισμού εύρους ημερομηνιών καταχωρήθηκε στην ουρά (Job ID: #{job_id}).")
+                        st.rerun()
+                    else:
+                        st.error("Αποτυχία καταχώρησης της εργασίας στην ουρά.")
+
+    with tab_queue_monitor:
+        st.write("🖥️ ETL Job Queue Monitor")
+        st.markdown("Παρακολουθήστε την κατάσταση των εργασιών συγχρονισμού που εκτελούνται ασύγχρονα στον server.")
+        
+        # Load jobs from database
+        engine = get_db_engine()
+        jobs_df = pd.DataFrame()
+        if engine:
+            try:
+                from sqlalchemy import text
+                with engine.connect() as conn:
+                    query = text("""
+                        SELECT 
+                            JobID, 
+                            JobType, 
+                            COALESCE(IssueKey, '-') as IssueKey,
+                            COALESCE(StartDate + ' έως ' + EndDate + ' (' + DateFilterType + ')', '-') as [DateRange],
+                            Status, 
+                            CreatedBy, 
+                            CreatedAt, 
+                            StartedAt, 
+                            FinishedAt, 
+                            LogFilePath
+                        FROM ETL_Queue 
+                        ORDER BY JobID DESC
+                    """)
+                    jobs_df = pd.read_sql(query, conn)
+            except Exception as e:
+                st.error(f"Σφάλμα κατά τη φόρτωση της ουράς εργασιών: {e}")
+                
+        if not jobs_df.empty:
+            st.dataframe(
+                jobs_df.drop(columns=['LogFilePath']),
+                column_config={
+                    "JobID": st.column_config.NumberColumn("Job ID", format="%d"),
+                    "JobType": "Τύπος Εργασίας",
+                    "IssueKey": "Issue Key",
+                    "DateRange": "Ημερομηνίες / Φίλτρο",
+                    "Status": "Κατάσταση",
+                    "CreatedBy": "Χρήστης",
+                    "CreatedAt": "Δημιουργήθηκε",
+                    "StartedAt": "Ξεκίνησε",
+                    "FinishedAt": "Ολοκληρώθηκε"
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            st.markdown("---")
+            st.write("📂 Προβολή Logs Εργασίας")
+            
+            job_options = {
+                f"Job #{row['JobID']} - {row['JobType']} ({row['Status']})": (row['JobID'], row['LogFilePath'])
+                for _, row in jobs_df.iterrows()
+            }
+            
+            selected_option = st.selectbox(
+                "Επιλέξτε Job για προβολή logs:",
+                options=list(job_options.keys()),
+                key="etl_monitor_selected_job"
+            )
+            
+            if selected_option:
+                job_id, log_file_path = job_options[selected_option]
+                
+                col_btn, col_info = st.columns([1, 4])
+                with col_btn:
+                    st.button("🔄 Ανανέωση Logs", key="etl_monitor_refresh_logs")
+                with col_info:
+                    st.caption("Τα logs ανανεώνονται χειροκίνητα πατώντας το κουμπί ή κάνοντας refresh στη σελίδα.")
+                    
+                if log_file_path and os.path.exists(log_file_path):
+                    try:
+                        with open(log_file_path, "r", encoding="utf-8", errors="replace") as f:
+                            logs_text = f.read()
+                        st.code(logs_text, language="text")
+                    except Exception as e:
+                        st.error(f"Σφάλμα κατά την ανάγνωση των logs: {e}")
+                else:
+                    st.info("Δεν έχουν δημιουργηθεί logs ακόμα για αυτή την εργασία (εκκρεμεί η έναρξη της εκτέλεσης).")
+                    
+        else:
+            st.info("Δεν βρέθηκαν καταχωρημένες εργασίες στην ουρά.")
 
     with tab_dev_docs:
         doc_choice = st.radio(
@@ -3532,14 +3658,27 @@ def render_manual_content():
     with st.expander("🚀 9. ETL Manager & Τεχνική Τεκμηρίωση (Admins)"):
         st.markdown("""
         Η καρτέλα **`🚀 ETL Manager`** (ορατή μόνο σε Administrators) προσφέρει εργαλεία για τη διαχείριση της ροής δεδομένων και της τεχνικής δομής:
-        1. **Μεμονωμένες Ενέργειες / Μαζικός Συγχρονισμός**: Χειροκίνητη εκτέλεση του ETL Pipeline για Projects, Users, Components, Issues.
-        2. **Jira Full Sync (Από Μηδέν)**: Πλήρης συγχρονισμός των Jira οντοτήτων από το μηδέν (αγνοώντας την ημερομηνία τελευταίου συγχρονισμού) για περιπτώσεις συντήρησης.
-        3. **📖 Dev Docs**: Πρόσβαση στην τεχνική τεκμηρίωση του συστήματος απευθείας εντός της εφαρμογής. Επιτρέπεται η εναλλαγή μεταξύ της αρχιτεκτονικής του Dashboard & ETL Pipeline (`DEVELOPER_DOCS.md`) και του συγχρονισμού της βάσης (`sync_db_docs.md`), με πλήρη υποστήριξη οπτικοποίησης διαγραμμάτων ροής Mermaid.
+        1. **Ασύγχρονη Ουρά Διεργασιών (Asynchronous ETL Queue)**: Όλες οι εργασίες συγχρονισμού εκτελούνται πλέον ασύγχρονα στο παρασκήνιο (background) μέσω ενός συστήματος ουράς (`ETL_Queue`). Όταν πατάτε ένα κουμπί συγχρονισμού, η εργασία μπαίνει σε κατάσταση `Pending` και εκτελείται αυτόματα από τον background worker χωρίς να παγώνει ο browser ή η εφαρμογή.
+        2. **🖥️ ETL Job Monitor**: Μια νέα ενσωματωμένη καρτέλα που επιτρέπει στους Administrators:
+           - Να παρακολουθούν την κατάσταση όλων των εργασιών στην ουρά (`Pending`, `Running`, `Success`, `Failed`).
+           - Να βλέπουν ποιος χρήστης ξεκίνησε την εργασία, πότε ξεκίνησε και πότε ολοκληρώθηκε.
+           - Να επιλέγουν οποιαδήποτε εργασία και να παρακολουθούν **live** τα logs εκτέλεσής της σε πραγματικό χρόνο (Log Terminal).
+        3. **📅 Συγχρονισμός βάσει Ημερομηνιών (Date Range Sync)**: Δυνατότητα συγχρονισμού Jira Issues εντός συγκεκριμένου ημερομηνιακού διαστήματος.
+           - Ο συγχρονισμός μπορεί να φιλτραριστεί με βάση την **Ημερομηνία Ενημέρωσης** (Updated Date - προτείνεται για να συμπεριλάβει αλλαγές σε worklogs/σχόλια) ή την **Ημερομηνία Δημιουργίας** (Created Date).
+        4. **Μεμονωμένες Ενέργειες / Μαζικός Συγχρονισμός**: Χειροκίνητη εκτέλεση του ETL Pipeline για Projects, Users, Components, Issues.
+        5. **Jira Full Sync (Από Μηδέν)**: Πλήρης συγχρονισμός των Jira οντοτήτων από το μηδέν (αγνοώντας την ημερομηνία τελευταίου συγχρονισμού) για περιπτώσεις συντήρησης.
+        6. **📖 Dev Docs**: Πρόσβαση στην τεχνική τεκμηρίωση του συστήματος απευθείας εντός της εφαρμογής. Επιτρέπεται η εναλλαγή μεταξύ της αρχιτεκτονικής του Dashboard & ETL Pipeline (`DEVELOPER_DOCS.md`) και του συγχρονισμού της βάσης (`sync_db_docs.md`), με πλήρη υποστήριξη οπτικοποίησης διαγραμμάτων ροής Mermaid.
         """)
 
     # expander 10 - Changelog
     with st.expander("📋 10. Ιστορικό Εκδόσεων (Changelog)"):
         st.markdown("""
+        ### Έκδοση 26.5.6a (2026-06-25)
+        * **Νέο:** Μετάβαση σε **Ασύγχρονο Μηχανισμό ETL (Asynchronous Queue & Worker)**. Οι συγχρονισμοί εκτελούνται πλέον στο παρασκήνιο (background) μέσω της ουράς `ETL_Queue`, αποτρέποντας το πάγωμα της Streamlit εφαρμογής και επιτρέποντας την ασφαλή εκτέλεση διεργασιών μεγάλης διάρκειας.
+        * **Νέο:** Προσθήκη καρτέλας **`🖥️ ETL Job Monitor`** με δυνατότητα ζωντανής παρακολούθησης της ροής των logs (live stream terminal logs) για οποιαδήποτε ενεργή ή παρελθούσα διεργασία.
+        * **Νέο:** Προσθήκη μεθόδου **`📅 Συγχρονισμός βάσει Ημερομηνιών (Date Range Sync)`** στον ETL Manager, με επιλογή φιλτραρίσματος βάσει Ημερομηνίας Ενημέρωσης (`Updated`) ή Δημιουργίας (`Created`) στο Jira API.
+        * **Νέο:** Υλοποίηση background daemon `etl_worker.py` για τη διαδοχική εκτέλεση των pending εργασιών της ουράς με απομονωμένα python subprocesses και καταγραφή logs σε UTF-8.
+
         ### Έκδοση 26.5.5c (2026-06-24)
         * **Νέο:** Προσθήκη καρτέλας `🔍 ETL Debugger` στον ETL Manager για τη δοκιμαστική εκτέλεση και αποσφαλμάτωση συγχρονισμού μεμονωμένων Jira Issues (βάσει IssueKey).
         * **Fix:** Επίλυση `UnicodeEncodeError` κατά την εκτέλεση του debugger σε Windows συστήματα με ελληνικό locale (κωδικοποίηση `CP1253`), μέσω αυτόματης αναδιάρθρωσης των `stdout` & `stderr` σε UTF-8.
