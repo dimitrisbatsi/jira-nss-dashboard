@@ -83,6 +83,31 @@ def main():
     # Ensure logs directory exists
     os.makedirs("logs", exist_ok=True)
     
+    # Cleanup zombie 'Running' jobs from previous crashes/restarts
+    try:
+        from sqlalchemy import text
+        with engine.begin() as conn:
+            zombies = conn.execute(
+                text("SELECT JobID FROM ETL_Queue WHERE Status = 'Running'")
+            ).fetchall()
+            if zombies:
+                zombie_ids = [z[0] for z in zombies]
+                print(f"[*] Found {len(zombie_ids)} zombie running jobs from previous session: {zombie_ids}")
+                print("[*] Marking them as 'Failed' (Interrupted) and setting FinishedAt...")
+                conn.execute(
+                    text("UPDATE ETL_Queue SET Status = 'Failed', FinishedAt = :now WHERE Status = 'Running'"),
+                    {"now": datetime.now()}
+                )
+                for zid in zombie_ids:
+                    zlog = f"logs/etl_job_{zid}.log"
+                    if os.path.exists(zlog):
+                        with open(zlog, "a", encoding="utf-8") as lf:
+                            lf.write("\n==================================================\n")
+                            lf.write(f"⚠️ Job interrupted due to worker shutdown/restart at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.\n")
+                            lf.write("==================================================\n")
+    except Exception as ex:
+        print(f"[WARNING] Failed to clean up zombie jobs: {ex}")
+        
     while True:
         try:
             # 1. Check if any job is currently 'Running'

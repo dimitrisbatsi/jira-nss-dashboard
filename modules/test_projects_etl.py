@@ -112,7 +112,7 @@ def run_jira_projects_etl():
         try:
             raw_projects = client.get_projects()
             valid_projects = []
-            target_keys = ["PYLCOM", "PYLFLE", "PLINTS", "PYFLDR", "ESLKAS", "GLXENT"] 
+            target_keys = ["PYLCOM", "PYLFLE", "PLINTS", "PYFLDR", "ESLKAS", "GLXENT", "PYLACC", "PYLHOS"] 
             
             for item in raw_projects:
                 project_key = item.get("key", "Unknown")

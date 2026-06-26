@@ -200,7 +200,7 @@ def run_incremental_jira_etl(ignore_last_sync=False):
         jql_query = (
             f'project IN ({projects_jql_str}) '
             f'AND updated >= "{last_sync_str}" '
-            f'AND ("product name[dropdown]" IN ("PYLON COMMERCIAL", "PYLON ERP", "PYLON FLEX", "Galaxy Enterprise") OR "product name[dropdown]" IS EMPTY) '
+            f'AND ("product name[dropdown]" IN ("PYLON COMMERCIAL", "PYLON ERP", "PYLON FLEX", "Galaxy Enterprise", "PYLON ACCOUNTING", "PYLON HOSPITALITY") OR "product name[dropdown]" IS EMPTY) '
             f'ORDER BY updated ASC'
         )
 
@@ -370,7 +370,7 @@ def run_jira_date_range_sync(start_date_str: str, end_date_str: str, date_type: 
             f'project IN ({projects_jql_str}) '
             f'AND {date_type} >= "{start_date_str}" '
             f'AND {date_type} <= "{end_date_str}" '
-            f'AND ("product name[dropdown]" IN ("PYLON COMMERCIAL", "PYLON ERP", "PYLON FLEX", "Galaxy Enterprise") OR "product name[dropdown]" IS EMPTY) '
+            f'AND ("product name[dropdown]" IN ("PYLON COMMERCIAL", "PYLON ERP", "PYLON FLEX", "Galaxy Enterprise", "PYLON ACCOUNTING", "PYLON HOSPITALITY") OR "product name[dropdown]" IS EMPTY) '
             f'ORDER BY {date_type} ASC'
         )
 

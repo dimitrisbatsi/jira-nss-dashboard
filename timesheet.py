@@ -3484,6 +3484,49 @@ def render_etl_manager_content():
                 hide_index=True
             )
             
+            # Section to Cancel/Reset active or pending jobs
+            active_jobs = jobs_df[jobs_df['Status'].isin(['Running', 'Pending'])]
+            if not active_jobs.empty:
+                st.markdown("---")
+                with st.expander("🛑 Διαχείριση & Ακύρωση Ενεργών / Κολλημένων Εργασιών"):
+                    st.warning(
+                        "Εάν μια εργασία έχει κολλήσει σε κατάσταση 'Running' (π.χ. επειδή διακόπηκε ο worker), "
+                        "μπορείτε να την ακυρώσετε από εδώ για να ξεμπλοκάρετε την ουρά."
+                    )
+                    
+                    cancel_options = {
+                        f"Job #{row['JobID']} - {row['JobType']} ({row['Status']})": row['JobID']
+                        for _, row in active_jobs.iterrows()
+                    }
+                    
+                    job_to_cancel = st.selectbox(
+                        "Επιλέξτε εργασία για ακύρωση:",
+                        options=list(cancel_options.keys()),
+                        key="etl_monitor_cancel_job_select"
+                    )
+                    
+                    if st.button("🛑 Ακύρωση Επιλεγμένης Εργασίας", key="etl_monitor_cancel_job_btn", type="primary"):
+                        target_job_id = cancel_options[job_to_cancel]
+                        try:
+                            from sqlalchemy import text
+                            with engine.begin() as conn:
+                                # Mark as Failed
+                                conn.execute(
+                                    text("UPDATE ETL_Queue SET Status = 'Failed', FinishedAt = :now WHERE JobID = :id"),
+                                    {"now": datetime.now(), "id": target_job_id}
+                                )
+                                # Write to log file if exists
+                                log_path = f"logs/etl_job_{target_job_id}.log"
+                                os.makedirs("logs", exist_ok=True)
+                                with open(log_path, "a", encoding="utf-8") as lf:
+                                    lf.write("\n==================================================\n")
+                                    lf.write(f"🛑 Job manually cancelled/reset via Admin UI at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.\n")
+                                    lf.write("==================================================\n")
+                            st.success(f"🎉 Η εργασία #{target_job_id} ακυρώθηκε επιτυχώς! Η ουρά έχει ξεμπλοκάρει.")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"Σφάλμα κατά την ακύρωση της εργασίας: {ex}")
+
             st.markdown("---")
             st.write("📂 Προβολή Logs Εργασίας")
             
