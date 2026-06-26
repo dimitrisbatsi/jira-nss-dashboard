@@ -1,10 +1,45 @@
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.types import String, Integer, DateTime, Boolean
+import uuid
+import time
+import random
+from sqlalchemy.exc import DBAPIError
 
+def retry_on_deadlock(max_retries=5, base_delay=0.5, max_delay=3.0):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    err_msg = str(e)
+                    is_deadlock = False
+                    if '1205' in err_msg or '40001' in err_msg or 'deadlock' in err_msg.lower():
+                        is_deadlock = True
+                    if not is_deadlock and isinstance(e, DBAPIError) and e.orig:
+                        orig_msg = str(e.orig)
+                        if '1205' in orig_msg or '40001' in orig_msg or 'deadlock' in orig_msg.lower():
+                            is_deadlock = True
+                    
+                    if is_deadlock:
+                        last_exception = e
+                        delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                        jitter = random.uniform(0.1, 0.5)
+                        sleep_time = delay + jitter
+                        print(f"[DEADLOCK RETRY] {func.__name__} attempt {attempt}/{max_retries} failed due to deadlock. Retrying in {sleep_time:.2f} seconds...")
+                        time.sleep(sleep_time)
+                    else:
+                        raise e
+            raise last_exception
+        return wrapper
+    return decorator
+
+@retry_on_deadlock()
 def upsert_projects(df: pd.DataFrame, engine):
     """Κάνει Upsert (MERGE) τα δεδομένα και επιστρέφει τα (inserted, updated) counts"""
-    temp_table = "GProjects_StagingTemp"
+    temp_table = f"GProjects_Stg_{uuid.uuid4().hex[:8]}"
 
     dtypes = {
         'ProjectID': Integer(),
@@ -54,8 +89,9 @@ def upsert_projects(df: pd.DataFrame, engine):
     print(f"  -> Η εγγραφή ολοκληρώθηκε! Νέες εγγραφές (Inserted): {inserted_count} | Ενημερώθηκαν (Updated): {updated_count}")
     return inserted_count, updated_count
 
+@retry_on_deadlock()
 def upsert_users(df: pd.DataFrame, engine):
-    temp_table = "GUsers_StagingTemp"
+    temp_table = f"GUsers_Stg_{uuid.uuid4().hex[:8]}"
 
     dtypes = {
         'UserID': String(100),   # <--- ΑΛΛΑΓΗ ΣΕ STRING
@@ -111,8 +147,9 @@ def upsert_users(df: pd.DataFrame, engine):
     print(f"  -> Η εγγραφή (Users) ολοκληρώθηκε! Inserted: {inserted_count} | Updated: {updated_count}")
     return inserted_count, updated_count
 
+@retry_on_deadlock()
 def upsert_issues(df: pd.DataFrame, engine):
-    temp_table = "GIssues_StagingTemp"
+    temp_table = f"GIssues_Stg_{uuid.uuid4().hex[:8]}"
 
     dtypes = {
         'IssueID': Integer(),
@@ -188,8 +225,9 @@ def upsert_issues(df: pd.DataFrame, engine):
     print(f"  -> Upsert Issues ολοκληρώθηκε! Inserted: {inserted_count} | Updated: {updated_count}")
     return inserted_count, updated_count
 
+@retry_on_deadlock()
 def upsert_components(df: pd.DataFrame, engine):
-    temp_table = "GComponents_StagingTemp"
+    temp_table = f"GComponents_Stg_{uuid.uuid4().hex[:8]}"
 
     dtypes = {
         'ComponentID': Integer(),
@@ -238,8 +276,9 @@ def upsert_components(df: pd.DataFrame, engine):
     print(f"  -> Upsert Components ολοκληρώθηκε! Inserted: {inserted} | Updated: {updated}")
     return inserted, updated
 
+@retry_on_deadlock()
 def upsert_comments(df: pd.DataFrame, engine):
-    temp_table = "GComments_StagingTemp"
+    temp_table = f"GComments_Stg_{uuid.uuid4().hex[:8]}"
 
     dtypes = {
         'CommentID': Integer(),
@@ -290,8 +329,9 @@ def upsert_comments(df: pd.DataFrame, engine):
     print(f"  -> Upsert Comments ολοκληρώθηκε! Inserted: {inserted} | Updated: {updated}")
     return inserted, updated
 
+@retry_on_deadlock()
 def upsert_audits(df: pd.DataFrame, engine):
-    temp_table = "GAudit_StagingTemp"
+    temp_table = f"GAudit_Stg_{uuid.uuid4().hex[:8]}"
 
     dtypes = {
         'AuditID': Integer(),
@@ -349,8 +389,9 @@ def upsert_audits(df: pd.DataFrame, engine):
     print(f"  -> Upsert Audits ολοκληρώθηκε! Inserted: {inserted} | Updated: {updated}")
     return inserted, updated
 
+@retry_on_deadlock()
 def upsert_custom_fields(df: pd.DataFrame, engine):
-    temp_table = "GIssueCustomFields_StagingTemp"
+    temp_table = f"GIssueCF_Stg_{uuid.uuid4().hex[:8]}"
 
     dtypes = {
         'IssueID': Integer(),
@@ -396,8 +437,9 @@ def upsert_custom_fields(df: pd.DataFrame, engine):
     print(f"  -> Upsert Custom Fields ολοκληρώθηκε! Inserted: {inserted} | Updated: {updated}")
     return inserted, updated
 
+@retry_on_deadlock()
 def upsert_time_tracking(df: pd.DataFrame, engine):
-    temp_table = "GTimeTracking_StagingTemp"
+    temp_table = f"GTimeTrack_Stg_{uuid.uuid4().hex[:8]}"
 
     dtypes = {
         'TimeEntryID': Integer(),

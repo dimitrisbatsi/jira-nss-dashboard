@@ -1162,6 +1162,51 @@ def rt_load_status_change_date():
     finally:
         conn.close()
 
+def rt_load_awaiting_customer_end_date():
+    conn = rt_get_connection()
+    query = """
+    WITH RawTransitions AS (
+        SELECT 
+            IssueID,
+            Created AS EventDate,
+            NewValue AS Status,
+            ROW_NUMBER() OVER (PARTITION BY IssueID ORDER BY Created) AS rn
+        FROM dbo.GAudit WITH (NOLOCK)
+        WHERE FieldName = 'status' AND SourceApp = 'Jira'
+    ),
+    AwaitingPairs AS (
+        SELECT 
+            curr.IssueID,
+            curr.EventDate AS StartTime,
+            next.EventDate AS EndTime,
+            ROW_NUMBER() OVER (PARTITION BY curr.IssueID ORDER BY curr.EventDate) AS PeriodNum
+        FROM RawTransitions curr WITH (NOLOCK)
+        JOIN RawTransitions next WITH (NOLOCK) ON curr.IssueID = next.IssueID AND next.rn = curr.rn + 1
+        WHERE curr.Status = 'AWAITING CUSTOMER'
+    )
+    SELECT 
+        IssueID,
+        MAX(CASE WHEN PeriodNum = 1 THEN StartTime END) AS Start1,
+        MAX(CASE WHEN PeriodNum = 1 THEN EndTime END) AS End1,
+        MAX(CASE WHEN PeriodNum = 2 THEN StartTime END) AS Start2,
+        MAX(CASE WHEN PeriodNum = 2 THEN EndTime END) AS End2,
+        MAX(CASE WHEN PeriodNum = 3 THEN StartTime END) AS Start3,
+        MAX(CASE WHEN PeriodNum = 3 THEN EndTime END) AS End3,
+        MAX(CASE WHEN PeriodNum = 4 THEN StartTime END) AS Start4,
+        MAX(CASE WHEN PeriodNum = 4 THEN EndTime END) AS End4,
+        MAX(CASE WHEN PeriodNum = 5 THEN StartTime END) AS Start5,
+        MAX(CASE WHEN PeriodNum = 5 THEN EndTime END) AS End5,
+        MAX(CASE WHEN PeriodNum = 6 THEN StartTime END) AS Start6,
+        MAX(CASE WHEN PeriodNum = 6 THEN EndTime END) AS End6
+    FROM AwaitingPairs WITH (NOLOCK)
+    GROUP BY IssueID
+    """
+    try:
+        df_res = pd.read_sql(query, conn)
+        return df_res
+    finally:
+        conn.close()
+
 def rt_convert_df_to_excel(df_res):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -2476,12 +2521,13 @@ def render_response_times_content():
         st.session_state.rt_df = None
 
     if load_clicked:
-        with st.spinner("Φόρτωση δεδομένων από τη βάση..."):
+        with st.spinner("Φόρτωση δεδομένων από τη βάση... (αναλόγως τον όγκο δεδομένων μπορεί να πάρει 1-3 λεπτά)"):
             try:
                 df_issues = rt_load_from_db().rename(columns={"IssueId": "IssueID"})
                 df_comments = rt_load_first_response()
                 df_assigned = rt_load_first_assigned()
                 df_status = rt_load_status_change_date()
+                df_awaiting = rt_load_awaiting_customer_end_date()
 
                 # Convert Dates
                 df_issues["CreationDate"] = pd.to_datetime(df_issues["CreationDate"])
@@ -2490,6 +2536,9 @@ def render_response_times_content():
                 df_comments["FirstExternalResponseDate"] = pd.to_datetime(df_comments["FirstExternalResponseDate"])
                 df_assigned["FirstAssignedDate"] = pd.to_datetime(df_assigned["FirstAssignedDate"])
                 df_status["FirstInProgressDate"] = pd.to_datetime(df_status["FirstInProgressDate"])
+                for col in ["Start1", "End1", "Start2", "End2", "Start3", "End3", "Start4", "End4", "Start5", "End5", "Start6", "End6"]:
+                    if col in df_awaiting.columns:
+                        df_awaiting[col] = pd.to_datetime(df_awaiting[col])
 
                 # Merge All
                 rt_df = (
@@ -2497,6 +2546,7 @@ def render_response_times_content():
                     .merge(df_assigned, on="IssueID", how="left")
                     .merge(df_comments, on="IssueID", how="left")
                     .merge(df_status, on="IssueID", how="left")
+                    .merge(df_awaiting, on="IssueID", how="left")
                 )
 
                 rt_df["Project"] = rt_df["IssueKey"].astype(str).str.split("-").str[0]
@@ -2573,6 +2623,42 @@ def render_response_times_content():
                 #     rt_df["ClosedDate"] - rt_df["FirstExternalResponseDate"]
                 # ).dt.total_seconds() / 86400
                 rt_df["FirstExternalResponse->Closed"] = get_business_days(rt_df["FirstExternalResponseDate"], rt_df["ClosedDate"])
+
+                # --- Awaiting Customer & Net calculations ---
+                def sum_awaiting_time(row):
+                    total_days = 0.0
+                    creation = pd.to_datetime(row['CreationDate'])
+                    closed = pd.to_datetime(row['ClosedDate'])
+                    limit_end = closed if pd.notnull(closed) else pd.Timestamp.now()
+                    
+                    periods = [
+                        (row['Start1'], row['End1']), (row['Start2'], row['End2']),
+                        (row['Start3'], row['End3']), (row['Start4'], row['End4']),
+                        (row['Start5'], row['End5']), (row['Start6'], row['End6'])
+                    ]
+                    
+                    for start, end in periods:
+                        if pd.notnull(start) and not pd.isna(start):
+                            s = pd.to_datetime(start)
+                            e = pd.to_datetime(end) if (pd.notnull(end) and not pd.isna(end)) else limit_end
+                            
+                            s_clipped = max(s, creation)
+                            e_clipped = min(e, limit_end)
+                            
+                            if s_clipped < e_clipped:
+                                val = get_business_days(pd.Series([s_clipped]), pd.Series([e_clipped])).iloc[0]
+                                total_days += val
+                    return total_days
+
+                rt_df['TotalAwaitingDays'] = rt_df.apply(sum_awaiting_time, axis=1)
+
+                rt_df["Net_Creation->Closed"] = None
+                closed_mask = rt_df["ClosedDate"].notna()
+                rt_df.loc[closed_mask, "Net_Creation->Closed"] = (
+                    rt_df.loc[closed_mask, "Creation->Closed"] - rt_df.loc[closed_mask, "TotalAwaitingDays"]
+                )
+                rt_df.loc[closed_mask, "Net_Creation->Closed"] = rt_df.loc[closed_mask, "Net_Creation->Closed"].clip(lower=0)
+                rt_df["Net_Creation->Closed"] = pd.to_numeric(rt_df["Net_Creation->Closed"], errors='coerce')
 
                 st.session_state.rt_df = rt_df
                 if "rt_filters_initialized" in st.session_state:
@@ -2912,23 +2998,26 @@ def render_response_times_content():
             # 2. KPI Summary
             st.write("<br>", unsafe_allow_html=True)
             st.subheader("📊 KPI Summary")
-            col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
-
+            st.caption("ℹ️ **Σημείωση**: Ο δείκτης **Net Creation → Closed** λειτουργεί ορθά μόνο με τελικά statuses αιτημάτων (Closed).")
+            col1, col2, col3, col4, col5, col6, col7, col8, col9 = st.columns(9)
             col1.metric("Filtered Tickets", len(filtered_rt_df), help="Αιτήματα που ικανοποιούν όλα τα ενεργά φίλτρα.")
-            col2.metric("Total Tickets", len(date_filtered_rt_df), help="Συνολικά αιτήματα στο επιλεγμένο ημερολογιακό εύρος (Created & Closed).")
+            col2.metric("Creation → Assigned", rt_safe_mean(filtered_rt_df["Creation->Assigned"]))
             col3.metric("Creation → InProgress", rt_safe_mean(filtered_rt_df["Creation->InProgress"]))
             col4.metric("Creation->FirstExternalResponse", rt_safe_mean(filtered_rt_df["Creation->FirstExternalResponse"]))
             col5.metric("InProgress → Closed", rt_safe_mean(filtered_rt_df["InProgress->Closed"]))
             col6.metric("External Resp → Closed", rt_safe_mean(filtered_rt_df["FirstExternalResponse->Closed"]))
             col7.metric("Creation → Closed", rt_safe_mean(filtered_rt_df["Creation->Closed"]))
+            col8.metric("Total Awaiting", rt_safe_mean(filtered_rt_df["TotalAwaitingDays"]), help="Συνολικός χρόνος αναμονής (Awaiting Customer) σε εργάσιμες ημέρες.")
+            col9.metric("Net Creation → Closed", rt_safe_mean(filtered_rt_df["Net_Creation->Closed"]), help="Καθαρός κύκλος κλεισίματος. Λειτουργεί ορθά μόνο με τελικά statuses αιτημάτων (Closed).")            
 
             # Old / Hidden metrics kept in comments as requested:
-            # col_hidden1.metric("Creation → Assigned (days)", rt_safe_mean(filtered_rt_df["Creation->Assigned"]))
-            # col_hidden2.metric("Creation → First Response (days)", rt_safe_mean(filtered_rt_df["Creation->FirstResponse"]))
-            # col_hidden3.metric("Assigned → First Response (days)", rt_safe_mean(filtered_rt_df["Assigned->FirstResponse"]))
-            # col_hidden4.metric("Assigned → Closed (days)", rt_safe_mean(filtered_rt_df["Assigned->Closed"]))
-            # col_hidden5.metric("Creation->FirstInternalResponse", rt_safe_mean(filtered_rt_df["Creation->FirstInternalResponse"]))
-            # col_hidden6.metric("Internal Resp → Closed", rt_safe_mean(filtered_rt_df["FirstInternalResponse->Closed"]))
+            # col_hidden1.metric("Total Tickets", len(date_filtered_rt_df), help="Συνολικά αιτήματα στο επιλεγμένο ημερολογιακό εύρος (Created & Closed).")
+            # col_hidden2.metric("Creation → Assigned (days)", rt_safe_mean(filtered_rt_df["Creation->Assigned"]))
+            # col_hidden3.metric("Creation → First Response (days)", rt_safe_mean(filtered_rt_df["Creation->FirstResponse"]))
+            # col_hidden4.metric("Assigned → First Response (days)", rt_safe_mean(filtered_rt_df["Assigned->FirstResponse"]))
+            # col_hidden5.metric("Assigned → Closed (days)", rt_safe_mean(filtered_rt_df["Assigned->Closed"]))
+            # col_hidden6.metric("Creation->FirstInternalResponse", rt_safe_mean(filtered_rt_df["Creation->FirstInternalResponse"]))
+            # col_hidden7.metric("Internal Resp → Closed", rt_safe_mean(filtered_rt_df["FirstInternalResponse->Closed"]))
 
             st.markdown("---")
             st.info("ℹ️ **Σημείωση SLA**: Οι χρόνοι υπολογίζονται αυτόματα με βάση εργάσιμο SLA 8ώρου (Δευτέρα - Παρασκευή 9πμ - 5μμ), εξαιρώντας τα Σαββατοκύριακα.")
@@ -2941,7 +3030,7 @@ def render_response_times_content():
                 # Aggregation mapping
                 agg_dict = {
                     "IssueKey": "count",
-                    # "Creation->Assigned": "mean",
+                    "Creation->Assigned": "mean",
                     # "Creation->FirstResponse": "mean",
                     # "Assigned->FirstResponse": "mean",
                     # "Assigned->Closed": "mean",
@@ -2951,7 +3040,9 @@ def render_response_times_content():
                     "InProgress->Closed": "mean",
                     # "FirstInternalResponse->Closed": "mean",
                     "FirstExternalResponse->Closed": "mean",
-                    "Creation->Closed": "mean"
+                    "Creation->Closed": "mean",
+                    "TotalAwaitingDays": "mean",
+                    "Net_Creation->Closed": "mean"
                 }
                 # Group by and aggregate
                 grouped_df = filtered_rt_df.groupby(sel_group).agg(agg_dict).reset_index()
@@ -2967,7 +3058,7 @@ def render_response_times_content():
                 grouped_df["Total Tickets"] = grouped_df["Total Tickets"].astype(int)
 
                 grouped_df = grouped_df.rename(columns={
-                    # "Creation->Assigned": "Creation → Assigned (Mean Days)",
+                    "Creation->Assigned": "Creation → Assigned (Mean Days)",
                     # "Creation->FirstResponse": "Creation → First Response (Mean Days)",
                     # "Assigned->FirstResponse": "Assigned → First Response (Mean Days)",
                     # "Assigned->Closed": "Assigned → Closed (Mean Days)",
@@ -2977,16 +3068,21 @@ def render_response_times_content():
                     "InProgress->Closed": "InProgress → Closed (Mean Days)",
                     # "FirstInternalResponse->Closed": "Internal Resp → Closed (Mean Days)",
                     "FirstExternalResponse->Closed": "External Resp → Closed (Mean Days)",
-                    "Creation->Closed": "Creation → Closed (Mean Days)"
+                    "Creation->Closed": "Creation → Closed (Mean Days)",
+                    "TotalAwaitingDays": "Total Awaiting (Mean Days)",
+                    "Net_Creation->Closed": "Net Creation → Closed (Mean Days)"
                 })
 
                 # Reorder columns
                 kpi_cols = [
+                    "Creation → Assigned (Mean Days)",
                     "Creation → InProgress (Mean Days)",
                     "Creation->FirstExternalResponse (Mean Days)",
                     "InProgress → Closed (Mean Days)",
                     "External Resp → Closed (Mean Days)",
-                    "Creation → Closed (Mean Days)"
+                    "Creation → Closed (Mean Days)",
+                    "Total Awaiting (Mean Days)",
+                    "Net Creation → Closed (Mean Days)"
                 ]
                 existing_kpi_cols = [c for c in kpi_cols if c in grouped_df.columns]
                 grouped_df = grouped_df[sel_group + ["Filtered Tickets", "Total Tickets"] + existing_kpi_cols]
@@ -2999,7 +3095,7 @@ def render_response_times_content():
                     column_config={
                         "Filtered Tickets": st.column_config.NumberColumn("Filtered Tickets", format="%d", help="Αιτήματα που ικανοποιούν όλα τα ενεργά φίλτρα."),
                         "Total Tickets": st.column_config.NumberColumn("Total Tickets", format="%d", help="Συνολικά αιτήματα στο επιλεγμένο ημερολογιακό εύρος (Created & Closed), αγνοώντας τα άλλα φίλτρα."),
-                        # "Creation → Assigned (Mean Days)": st.column_config.NumberColumn("Creation → Assigned (Avg Days)", format="%.2f"),
+                        "Creation → Assigned (Mean Days)": st.column_config.NumberColumn("Creation → Assigned (Avg Days)", format="%.2f"),
                         # "Creation → First Response (Mean Days)": st.column_config.NumberColumn("Creation → First Response (Avg Days)", format="%.2f"),
                         # "Assigned → First Response (Mean Days)": st.column_config.NumberColumn("Assigned → First Response (Avg Days)", format="%.2f"),
                         # "Assigned → Closed (Mean Days)": st.column_config.NumberColumn("Assigned → Closed (Avg Days)", format="%.2f"),
@@ -3010,6 +3106,8 @@ def render_response_times_content():
                         # "Internal Resp → Closed (Mean Days)": st.column_config.NumberColumn("Internal Resp → Closed (Avg Days)", format="%.2f"),
                         "External Resp → Closed (Mean Days)": st.column_config.NumberColumn("External Resp → Closed (Avg Days)", format="%.2f"),
                         "Creation → Closed (Mean Days)": st.column_config.NumberColumn("Creation → Closed (Avg Days)", format="%.2f"),
+                        "Total Awaiting (Mean Days)": st.column_config.NumberColumn("Total Awaiting (Avg Days)", format="%.2f"),
+                        "Net Creation → Closed (Mean Days)": st.column_config.NumberColumn("Net Creation → Closed (Avg Days)", format="%.2f", help="Καθαρός κύκλος κλεισίματος. Λειτουργεί ορθά μόνο με τελικά statuses αιτημάτων (Closed)."),
                     }
                 )
                 
@@ -3034,7 +3132,7 @@ def render_response_times_content():
                     # "FirstInternalResponseDate",
                     "FirstExternalResponseDate",
                     "ClosedDate",
-                    # "Creation->Assigned",
+                    "Creation->Assigned",
                     # "Creation->FirstResponse",
                     # "Assigned->FirstResponse",
                     # "Assigned->Closed",
@@ -3044,7 +3142,9 @@ def render_response_times_content():
                     "InProgress->Closed",
                     # "FirstInternalResponse->Closed",
                     "FirstExternalResponse->Closed",
-                    "Creation->Closed"
+                    "Creation->Closed",
+                    "TotalAwaitingDays",
+                    "Net_Creation->Closed"
                 ]
                 existing_cols = [c for c in column_order if c in filtered_rt_df.columns]
                 display_df = filtered_rt_df[existing_cols]
@@ -3073,7 +3173,7 @@ def render_response_times_content():
                         # "FirstInternalResponseDate": st.column_config.DatetimeColumn("First Internal Response", width=160, format="DD/MM/YYYY HH:mm"),
                         "FirstExternalResponseDate": st.column_config.DatetimeColumn("First External Response", width=160, format="DD/MM/YYYY HH:mm"),
                         "ClosedDate": st.column_config.DatetimeColumn("Closed Date", width=160, format="DD/MM/YYYY HH:mm"),
-                        # "Creation->Assigned": st.column_config.NumberColumn("Creation → Assigned (Days)", width=240, format="%.2f"),
+                        "Creation->Assigned": st.column_config.NumberColumn("Creation → Assigned (Days)", width=240, format="%.2f"),
                         # "Creation->FirstResponse": st.column_config.NumberColumn("Creation → First Response (Days)", width=240, format="%.2f"),
                         # "Assigned->FirstResponse": st.column_config.NumberColumn("Assigned → First Response (Days)", width=240, format="%.2f"),
                         # "Assigned->Closed": st.column_config.NumberColumn("Assigned → Closed (Days)", width=240, format="%.2f"),
@@ -3084,6 +3184,8 @@ def render_response_times_content():
                         # "FirstInternalResponse->Closed": st.column_config.NumberColumn("Internal Resp → Closed (Days)", width=220, format="%.2f"),
                         "FirstExternalResponse->Closed": st.column_config.NumberColumn("External Resp → Closed (Days)", width=220, format="%.2f"),
                         "Creation->Closed": st.column_config.NumberColumn("Creation → Closed (Days)", width=220, format="%.2f"),
+                        "TotalAwaitingDays": st.column_config.NumberColumn("Total Awaiting (Days)", width=220, format="%.2f", help="Συνολικός χρόνος αναμονής (Awaiting Customer) σε εργάσιμες ημέρες."),
+                        "Net_Creation->Closed": st.column_config.NumberColumn("Net Creation → Closed (Days)", width=220, format="%.2f", help="Καθαρός κύκλος κλεισίματος. Λειτουργεί ορθά μόνο με τελικά statuses αιτημάτων (Closed)."),
                     }
                 )
 
