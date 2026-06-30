@@ -3901,13 +3901,15 @@ def render_manual_content():
     with st.expander("📋 Ιστορικό Εκδόσεων (Changelog)"):
         st.markdown("""
         ### Έκδοση 26.6.2a (2026-06-30)
-        * **Νέο:** Προσθήκη **Συστήματος 3 Σταδίων Ελέγχου Ερωτήσεων** (Workflow Stages 1, 2, 3) με ουρά αξιολόγησης (`📥 Εκκρεμότητες Ελέγχου`).
-        * **Νέο:** Αναδυόμενο παράθυρο επεξεργασίας ερωτήσεων (`st.dialog`) με δυναμική εμφάνιση/επεξεργασία επιλογών απαντήσεων βάσει του τύπου της ερώτησης.
-        * **Νέο:** Στήλη υπευθύνου ανάθεσης ("Ανάθεση Σε") στον πίνακα της Τράπεζας Ερωτήσεων.
-        * **Νέο:** Αυτόματος συγχρονισμός τοπικά εγκεκριμένων αλλαγών ερωτήσεων στο ClassMarker API (`push_question_to_classmarker`).
-        * **Νέο:** Προβολή proctoring infraction timeline με αυτόματη αποκωδικοποίηση JSON (από `ProctoringEventsJSON`) χωρίς ανάγκη εξωτερικού πίνακα.
-        * **Νέο:** Επεξεργασία ρόλων χρηστών (εκτός Administrators που αλλάζουν μόνο μέσω βάσης).
-        * **Νέο:** Υποστήριξη ρόλων `ContentCreator` ( Consultant + ClassMarker ερωτήσεις χωρίς ETL) και `ContentManager` ( TeamLeader + πλήρης διαχείριση ClassMarker).
+        * **Νέο (ClassMarker integration):** Προσθήκη **Τράπεζας Ερωτήσεων ClassMarker** (Questions Bank) με προβολή κατηγοριών, βαθμών, και επιλογών, καθώς και αυτόματης σήμανσης τοπικά τροποποιημένων εγγραφών (`IsLocallyModified = 1`) για αποφυγή ETL overwrite.
+        * **Νέο (ClassMarker integration):** Προσθήκη **Αποτελεσμάτων & Proctoring** (Test Results Dashboard) για την παρακολούθηση των εξετάσεων και των proctoring logs.
+        * **Νέο (Review Workflow):** Προσθήκη **Συστήματος 3 Σταδίων Ελέγχου Ερωτήσεων** (Workflow Stages 1, 2, 3) με ουρά αξιολόγησης (`📥 Εκκρεμότητες Ελέγχου`) και στήλη υπευθύνου ανάθεσης ("Ανάθεση Σε") στον κεντρικό πίνακα.
+        * **Νέο (Dialog Editor):** Αναδυόμενο παράθυρο επεξεργασίας ερωτήσεων (`st.dialog`) με δυναμική εμφάνιση/επεξεργασία επιλογών απαντήσεων βάσει του τύπου της ερώτησης.
+        * **Νέο (API Sync):** Αυτόματος συγχρονισμός τοπικά εγκεκριμένων αλλαγών ερωτήσεων στο ClassMarker API (`push_question_to_classmarker`) με υποστήριξη mock fallback.
+        * **Νέο (Proctoring logs):** Προβολή proctoring infraction timeline με αυτόματη αποκωδικοποίηση JSON (από `ProctoringEventsJSON`) χωρίς ανάγκη εξωτερικού πίνακα.
+        * **Νέο (User Management):** Επεξεργασία ρόλων χρηστών από τον Administrator (εκτός Administrators που αλλάζουν μόνο μέσω βάσης).
+        * **Νέο (Roles):** Προσθήκη υποστήριξης ρόλων `ContentCreator` ( Consultant + ClassMarker ερωτήσεις χωρίς ETL) και `ContentManager` ( TeamLeader + πλήρης διαχείριση ClassMarker).
+        * **Νέο (ETL Pipelines):** Νέα ETL Jobs συγχρονισμού ερωτήσεων (`CLASSMARKER_QUESTIONS_SYNC`) και αποτελεσμάτων (`CLASSMARKER_RESULTS_SYNC`) στην ασύγχρονη ουρά.
 
         ### Έκδοση 26.5.6a (2026-06-25)
         * **Νέο:** Μετάβαση σε **Ασύγχρονο Μηχανισμό ETL (Asynchronous Queue & Worker)**. Οι συγχρονισμοί εκτελούνται πλέον στο παρασκήνιο (background) μέσω της ουράς `ETL_Queue`, αποτρέποντας το πάγωμα της Streamlit εφαρμογής και επιτρέποντας την ασφαλή εκτέλεση διεργασιών μεγάλης διάρκειας.
