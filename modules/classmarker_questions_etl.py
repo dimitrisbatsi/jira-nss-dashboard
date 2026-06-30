@@ -181,6 +181,8 @@ def main():
                 cat_data = cat_res.json()
                 q_data = q_res.json()
                 
+                print(f"[DEBUG] Categories API raw response: {cat_data}")
+                
                 # Check for ClassMarker internal errors (returned with HTTP 200)
                 if cat_data.get("status") == "error":
                     err = cat_data.get("error", {})
@@ -192,12 +194,26 @@ def main():
                     sys.exit(1)
                 
                 categories = []
-                for c in cat_data.get("categories", []):
-                    categories.append({
-                        "CategoryID": c.get("id"),
-                        "CategoryName": c.get("name"),
-                        "ParentCategoryID": c.get("parent_id")
-                    })
+                for pc in cat_data.get("parent_categories", []):
+                    p_id = pc.get("parent_category_id") or pc.get("id")
+                    p_name = pc.get("parent_category_name") or pc.get("name")
+                    if p_id is not None:
+                        categories.append({
+                            "CategoryID": p_id,
+                            "CategoryName": p_name or f"Parent Category {p_id}",
+                            "ParentCategoryID": None
+                        })
+                    
+                    for c in pc.get("categories") or []:
+                        c_id = c.get("category_id") or c.get("id")
+                        c_name = c.get("category_name") or c.get("name")
+                        c_parent = c.get("parent_category_id") or p_id
+                        if c_id is not None:
+                            categories.append({
+                                "CategoryID": c_id,
+                                "CategoryName": c_name or f"Category {c_id}",
+                                "ParentCategoryID": c_parent
+                            })
                     
                 questions = []
                 for q in q_data.get("questions", []):
