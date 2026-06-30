@@ -17,6 +17,21 @@ if sys.platform.startswith('win'):
     except AttributeError:
         pass
 
+def load_env_file():
+    env_vars = {}
+    if os.path.exists(".env"):
+        try:
+            with open(".env", "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        v = v.strip().strip('"').strip("'")
+                        env_vars[k.strip()] = v
+        except Exception:
+            pass
+    return env_vars
+
 def get_db_engine():
     secrets_path = os.path.join(".streamlit", "secrets.toml")
     if not os.path.exists(secrets_path):
@@ -32,6 +47,13 @@ def get_db_engine():
     except Exception as e:
         print(f"[ERROR] Failed to load secrets: {e}")
         return None, None
+
+    # Fallback to env / .env
+    env_vars = load_env_file()
+    if not api_key or api_key == "your_api_key":
+        api_key = os.environ.get("CLASSMARKER_API_KEY") or env_vars.get("CLASSMARKER_API_KEY", "")
+    if not api_secret or api_secret == "your_api_secret":
+        api_secret = os.environ.get("CLASSMARKER_API_SECRET") or env_vars.get("CLASSMARKER_API_SECRET", "")
         
     if not conn_str:
         print("[ERROR] CONNECTION_STRING is missing in secrets.toml")
@@ -159,6 +181,16 @@ def main():
                 cat_data = cat_res.json()
                 q_data = q_res.json()
                 
+                # Check for ClassMarker internal errors (returned with HTTP 200)
+                if cat_data.get("status") == "error":
+                    err = cat_data.get("error", {})
+                    print(f"[ERROR] Categories API error: {err.get('error_code')} - {err.get('error_message')}")
+                    sys.exit(1)
+                if q_data.get("status") == "error":
+                    err = q_data.get("error", {})
+                    print(f"[ERROR] Questions API error: {err.get('error_code')} - {err.get('error_message')}")
+                    sys.exit(1)
+                
                 categories = []
                 for c in cat_data.get("categories", []):
                     categories.append({
@@ -180,11 +212,11 @@ def main():
                         "UpdatedAt": datetime.fromtimestamp(q.get("updated", time.time()))
                     })
             else:
-                print(f"[WARNING] API returned status code {cat_res.status_code}/{q_res.status_code}. Falling back to mock data.")
-                categories, questions = generate_mock_questions()
+                print(f"[ERROR] HTTP status error: categories={cat_res.status_code}, questions={q_res.status_code}")
+                sys.exit(1)
         except Exception as e:
-            print(f"[WARNING] ClassMarker API call failed: {e}. Falling back to mock data.")
-            categories, questions = generate_mock_questions()
+            print(f"[ERROR] ClassMarker API call failed: {e}")
+            sys.exit(1)
 
     # Database loading
     max_retries = 3
