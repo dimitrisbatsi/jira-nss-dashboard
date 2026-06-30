@@ -4050,6 +4050,25 @@ def push_question_to_classmarker(question_id):
     api_key = st.secrets.get("CLASSMARKER_API_KEY", "")
     api_secret = st.secrets.get("CLASSMARKER_API_SECRET", "")
     
+    if not api_key or api_key == "your_api_key" or not api_secret or api_secret == "your_api_secret":
+        # Check env variables or .env file
+        env_vars = {}
+        if os.path.exists(".env"):
+            try:
+                with open(".env", "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            v = v.strip().strip('"').strip("'")
+                            env_vars[k.strip()] = v
+            except Exception:
+                pass
+        if not api_key or api_key == "your_api_key":
+            api_key = os.environ.get("CLASSMARKER_API_KEY") or env_vars.get("CLASSMARKER_API_KEY", "")
+        if not api_secret or api_secret == "your_api_secret":
+            api_secret = os.environ.get("CLASSMARKER_API_SECRET") or env_vars.get("CLASSMARKER_API_SECRET", "")
+            
     if not api_key or not api_secret or api_key == "your_api_key" or api_secret == "your_api_secret":
         st.warning(f"⚠️ [MOCK] Mock Sync: Αποστολή ερώτησης ID {question_id} στο ClassMarker επιτυχής!")
         try:
@@ -4065,7 +4084,7 @@ def push_question_to_classmarker(question_id):
             
     try:
         timestamp = str(int(time.time()))
-        signature = hashlib.sha256((timestamp + api_secret).encode('utf-8')).hexdigest()
+        signature = hashlib.sha256((api_key + api_secret + timestamp).encode('utf-8')).hexdigest()
         
         # Real API request
         url = f"https://api.classmarker.com/v1/questions.json?api_key={api_key}&signature={signature}&timestamp={timestamp}"

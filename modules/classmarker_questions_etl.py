@@ -167,7 +167,7 @@ def main():
         print(f"[*] Syncing from ClassMarker API using key: {api_key[:5]}...")
         try:
             timestamp = str(int(time.time()))
-            signature = hashlib.sha256((timestamp + api_secret).encode('utf-8')).hexdigest()
+            signature = hashlib.sha256((api_key + api_secret + timestamp).encode('utf-8')).hexdigest()
             
             # Categories endpoint
             cat_url = f"https://api.classmarker.com/v1/categories.json?api_key={api_key}&signature={signature}&timestamp={timestamp}"
