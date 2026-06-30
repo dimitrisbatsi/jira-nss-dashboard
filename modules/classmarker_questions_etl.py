@@ -202,10 +202,10 @@ def main():
                 questions = []
                 for q in q_data.get("questions", []):
                     questions.append({
-                        "QuestionID": q.get("id"),
+                        "QuestionID": q.get("question_id") or q.get("id"),
                         "CategoryID": q.get("category_id"),
-                        "QuestionType": q.get("type"),
-                        "QuestionText": q.get("text"),
+                        "QuestionType": q.get("question_type") or q.get("type"),
+                        "QuestionText": q.get("question") or q.get("text"),
                         "OptionsJSON": json.dumps(q.get("options", []), ensure_ascii=False),
                         "Points": float(q.get("points", 1.0)),
                         "Active": 1 if q.get("status") == "active" else 0,

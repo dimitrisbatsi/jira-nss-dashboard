@@ -212,77 +212,94 @@ def main():
         results = generate_mock_results()
     else:
         print(f"[*] Syncing from ClassMarker API using key: {api_key[:5]}...")
-        try:
-            timestamp = str(int(time.time()))
-            signature = hashlib.sha256((api_key + api_secret + timestamp).encode('utf-8')).hexdigest()
-            
-            # Results endpoint
-            url = f"https://api.classmarker.com/v1/results.json?api_key={api_key}&signature={signature}&timestamp={timestamp}"
-            res = requests.get(url, timeout=15)
-            
-            if res.status_code == 200:
-                data = res.json()
+        
+        endpoints = [
+            "https://api.classmarker.com/v1/links/recent_results.json",
+            "https://api.classmarker.com/v1/groups/recent_results.json"
+        ]
+        
+        for endpoint in endpoints:
+            print(f"[*] Pulling results from: {endpoint}...")
+            try:
+                timestamp = str(int(time.time()))
+                signature = hashlib.sha256((api_key + api_secret + timestamp).encode('utf-8')).hexdigest()
                 
-                # Check for ClassMarker internal errors (returned with HTTP 200)
-                if data.get("status") == "error":
-                    err = data.get("error", {})
-                    print(f"[ERROR] Results API error: {err.get('error_code')} - {err.get('error_message')}")
-                    sys.exit(1)
+                url = f"{endpoint}?api_key={api_key}&signature={signature}&timestamp={timestamp}"
+                res = requests.get(url, timeout=15)
                 
-                for r in data.get("results", []):
-                    # Extract test details
-                    test_obj = r.get("test", {})
-                    test_id = test_obj.get("test_id", 0)
-                    test_name = test_obj.get("test_name", "Unknown Test")
+                if res.status_code == 200:
+                    data = res.json()
                     
-                    # Extract user details
-                    user_obj = r.get("user", {})
-                    user_id = user_obj.get("user_id", "")
-                    first_name = user_obj.get("first_name", "")
-                    last_name = user_obj.get("last_name", "")
-                    candidate_name = f"{first_name} {last_name}".strip() or "Unknown Candidate"
-                    candidate_email = user_obj.get("email", "")
+                    # Check for ClassMarker internal errors (returned with HTTP 200)
+                    if data.get("status") == "error":
+                        err = data.get("error", {})
+                        print(f"[WARNING] Endpoint {endpoint} returned error: {err.get('error_code')} - {err.get('error_message')}")
+                        continue
                     
-                    # Proctoring details
-                    proctor_obj = r.get("proctoring", {})
-                    events = proctor_obj.get("events", [])
-                    proctoring_flag = 1 if (proctor_obj.get("flag", False) or len(events) > 0) else 0
-                    events_count = len(events)
-                    
-                    # Format events array to store in JSON format
-                    formatted_events = []
-                    for ev in events:
-                        ts_val = ev.get("timestamp", time.time())
-                        dt_obj = datetime.fromtimestamp(ts_val)
-                        formatted_events.append({
-                            "event_type": ev.get("event_type", "unknown"),
-                            "timestamp": dt_obj.strftime("%Y-%m-%d %H:%M:%S"),
-                            "details": ev.get("details", "")
+                    for r in data.get("results", []):
+                        # Extract test details
+                        test_obj = r.get("test") or {}
+                        test_id = test_obj.get("test_id") or r.get("test_id") or 0
+                        test_name = test_obj.get("test_name") or r.get("test_name") or "Unknown Test"
+                        
+                        # Extract user details
+                        user_obj = r.get("user") or {}
+                        user_id = user_obj.get("user_id") or r.get("user_id") or ""
+                        first_name = user_obj.get("first_name") or r.get("first_name") or ""
+                        last_name = user_obj.get("last_name") or r.get("last_name") or ""
+                        candidate_name = f"{first_name} {last_name}".strip() or "Unknown Candidate"
+                        candidate_email = user_obj.get("email") or r.get("email") or ""
+                        
+                        # Proctoring details
+                        proctor_obj = r.get("proctoring") or r
+                        events = proctor_obj.get("events") or []
+                        proctoring_flag = 1 if (proctor_obj.get("flag", False) or len(events) > 0) else 0
+                        events_count = len(events)
+                        
+                        # Format events array to store in JSON format
+                        formatted_events = []
+                        for ev in events:
+                            ts_val = ev.get("timestamp", time.time())
+                            # If timestamp is float/int, parse it
+                            try:
+                                dt_obj = datetime.fromtimestamp(float(ts_val))
+                            except Exception:
+                                dt_obj = datetime.now()
+                            event_type = ev.get("event") or ev.get("event_type") or "unknown"
+                            details = ev.get("details") or ev.get("seconds_away") or ""
+                            if details and not isinstance(details, str):
+                                details = str(details)
+                            formatted_events.append({
+                                "event_type": event_type,
+                                "timestamp": dt_obj.strftime("%Y-%m-%d %H:%M:%S"),
+                                "details": details
+                            })
+                        
+                        finished_ts = r.get("finished") or r.get("date_completed") or r.get("date_finished") or time.time()
+                        try:
+                            dt_finished = datetime.fromtimestamp(float(finished_ts))
+                        except Exception:
+                            dt_finished = datetime.now()
+                        
+                        results.append({
+                            "ResultID": r.get("result_id"),
+                            "TestID": test_id,
+                            "TestName": test_name,
+                            "UserID": user_id,
+                            "CandidateName": candidate_name,
+                            "CandidateEmail": candidate_email,
+                            "Score": float(r.get("score", 0.0)),
+                            "Percentage": float(r.get("percentage", 0.0)),
+                            "DurationSeconds": int(r.get("duration", 0)),
+                            "FinishedAt": dt_finished,
+                            "ProctoringFlag": proctoring_flag,
+                            "ProctoringEventsCount": events_count,
+                            "ProctoringEventsJSON": json.dumps(formatted_events, ensure_ascii=False)
                         })
-                    
-                    finished_ts = r.get("finished", time.time())
-                    
-                    results.append({
-                        "ResultID": r.get("result_id"),
-                        "TestID": test_id,
-                        "TestName": test_name,
-                        "UserID": user_id,
-                        "CandidateName": candidate_name,
-                        "CandidateEmail": candidate_email,
-                        "Score": float(r.get("score", 0.0)),
-                        "Percentage": float(r.get("percentage", 0.0)),
-                        "DurationSeconds": int(r.get("duration", 0)),
-                        "FinishedAt": datetime.fromtimestamp(finished_ts),
-                        "ProctoringFlag": proctoring_flag,
-                        "ProctoringEventsCount": events_count,
-                        "ProctoringEventsJSON": json.dumps(formatted_events, ensure_ascii=False)
-                    })
-            else:
-                print(f"[ERROR] HTTP status error: {res.status_code}")
-                sys.exit(1)
-        except Exception as e:
-            print(f"[ERROR] ClassMarker Results API call failed: {e}")
-            sys.exit(1)
+                else:
+                    print(f"[WARNING] Endpoint {endpoint} returned HTTP status {res.status_code}")
+            except Exception as e:
+                print(f"[WARNING] ClassMarker Results API call failed for {endpoint}: {e}")
 
     # Load results to database
     max_retries = 3
