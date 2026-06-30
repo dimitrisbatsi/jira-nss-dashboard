@@ -195,7 +195,7 @@ def main():
                 
                 categories = []
                 for pc in cat_data.get("parent_categories", []):
-                    p_id = pc.get("parent_category_id") or pc.get("id")
+                    p_id = pc.get("parent_category_id") if pc.get("parent_category_id") is not None else pc.get("id")
                     p_name = pc.get("parent_category_name") or pc.get("name")
                     if p_id is not None:
                         categories.append({
@@ -205,9 +205,9 @@ def main():
                         })
                     
                     for c in pc.get("categories") or []:
-                        c_id = c.get("category_id") or c.get("id")
+                        c_id = c.get("category_id") if c.get("category_id") is not None else c.get("id")
                         c_name = c.get("category_name") or c.get("name")
-                        c_parent = c.get("parent_category_id") or p_id
+                        c_parent = c.get("parent_category_id") if c.get("parent_category_id") is not None else p_id
                         if c_id is not None:
                             categories.append({
                                 "CategoryID": c_id,
@@ -217,9 +217,11 @@ def main():
                     
                 questions = []
                 for q in q_data.get("questions", []):
+                    q_id = q.get("question_id") if q.get("question_id") is not None else q.get("id")
+                    q_cat_id = q.get("category_id")
                     questions.append({
-                        "QuestionID": q.get("question_id") or q.get("id"),
-                        "CategoryID": q.get("category_id"),
+                        "QuestionID": q_id,
+                        "CategoryID": q_cat_id,
                         "QuestionType": q.get("question_type") or q.get("type"),
                         "QuestionText": q.get("question") or q.get("text"),
                         "OptionsJSON": json.dumps(q.get("options", []), ensure_ascii=False),
