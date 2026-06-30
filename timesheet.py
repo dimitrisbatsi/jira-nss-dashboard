@@ -9,7 +9,7 @@ import hashlib
 import pyodbc
 import time
 from datetime import datetime
-
+from sqlalchemy import text
 import time
 
 # --- ETL Modules Imports ---
@@ -18,7 +18,7 @@ from modules.test_users_etl import run_users_etl, run_jira_users_etl
 from modules.test_components_etl import run_components_etl, run_jira_components_etl
 from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl
 
-APP_VERSION = "26.5.6a (2026-06-25)"
+APP_VERSION = "26.6.2a (2026-06-30)"
 
 # --- Helper functions for state updates ---
 def on_only_me_click(username):
@@ -799,6 +799,23 @@ def admin_update_user_status(user_id, is_active):
         st.error(f"Σφάλμα κατά την ενημέρωση κατάστασης χρήστη: {e}")
         return False
 
+def admin_update_user_role(user_id, role_id):
+    engine = get_db_engine()
+    if not engine:
+        return False
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE Users SET RoleID = :role_id WHERE UserID = :user_id"),
+                {"role_id": role_id, "user_id": user_id}
+            )
+        return True
+    except Exception as e:
+        st.error(f"Σφάλμα κατά την ενημέρωση ρόλου χρήστη: {e}")
+        return False
+
+
 def admin_reset_user_password(user_id, default_password_plain):
     engine = get_db_engine()
     if not engine:
@@ -1382,10 +1399,12 @@ selected_page = st.session_state.selected_page
 valid_pages = ["📊 Timesheet", "💡 Knowledge Base", "📢 Ανακοινώσεις & Tips", "📖 Οδηγίες Χρήσης"]
 if st.session_state.logged_in:
     valid_pages.extend(["👤 Το Προφίλ μου"])
-    if st.session_state.user_role in ["Administrator", "Team Leader"]:
+    if st.session_state.user_role in ["Administrator", "Team Leader", "ContentManager"]:
         valid_pages.extend(["👥 Διαχείριση Ομάδων", "⏱️ Χρόνοι Απόκρισης"])
     if st.session_state.user_role == "Administrator":
         valid_pages.append("🚀 ETL Manager")
+    if st.session_state.user_role in ["Administrator", "ContentManager", "ContentCreator"]:
+        valid_pages.append("🎓 ClassMarker")
 
 if selected_page not in valid_pages:
     selected_page = "📊 Timesheet"
@@ -1406,19 +1425,24 @@ draw_nav_button("📖 Οδηγίες Χρήσης", "📖 Οδηγίες Χρή�
 # 2. Group: Χρόνοι & Metrics
 st.sidebar.markdown('<div class="menu-section-header">⏱️ Χρόνοι & Metrics</div>', unsafe_allow_html=True)
 draw_nav_button("📊 Timesheet", "📊 Timesheet")
-if st.session_state.logged_in and st.session_state.user_role in ["Administrator", "Team Leader"]:
+if st.session_state.logged_in and st.session_state.user_role in ["Administrator", "Team Leader", "ContentManager"]:
     draw_nav_button("⏱️ Χρόνοι Απόκρισης", "⏱️ Χρόνοι Απόκρισης")
 
-# 3. Group: Διαδικασίες & Ανακοινώσεις
+# 3. Group: Πιστοποιήσεις
+if st.session_state.logged_in and st.session_state.user_role in ["Administrator", "ContentManager", "ContentCreator"]:
+    st.sidebar.markdown('<div class="menu-section-header">🎓 Πιστοποιήσεις</div>', unsafe_allow_html=True)
+    draw_nav_button("🎓 ClassMarker", "🎓 ClassMarker")
+
+# 4. Group: Διαδικασίες & Ανακοινώσεις
 st.sidebar.markdown('<div class="menu-section-header">📢 Διαδικασίες & Ανακοινώσεις</div>', unsafe_allow_html=True)
 draw_nav_button("💡 Knowledge Base", "💡 Knowledge Base")
 draw_nav_button("📢 Ανακοινώσεις & Tips", "📢 Ανακοινώσεις & Tips")
 
-# 4. Group: Διαχείριση Λογαριασμού και Ομάδων
+# 5. Group: Διαχείριση Λογαριασμού και Ομάδων
 if st.session_state.logged_in:
     st.sidebar.markdown('<div class="menu-section-header">👤 Διαχείριση Λογαριασμού και Ομάδων</div>', unsafe_allow_html=True)
     draw_nav_button("👤 Το Προφίλ μου", "👤 Το Προφίλ μου")
-    if st.session_state.user_role in ["Administrator", "Team Leader"]:
+    if st.session_state.user_role in ["Administrator", "Team Leader", "ContentManager"]:
         draw_nav_button("👥 Διαχείριση Ομάδων", "👥 Διαχείριση Ομάδων")
     if st.session_state.user_role == "Administrator":
         draw_nav_button("🚀 ETL Manager", "🚀 ETL Manager")
@@ -2327,7 +2351,47 @@ def render_management_content():
                                         "UPDATE_USER_STATUS",
                                         f"Αλλαγή κατάστασης χρήστη {selected_user['Username']} σε: {'Ενεργός' if new_active else 'Ανενεργός'}"
                                     )
-                                    st.success("✅ Η κατάσταση του χρήστη ενημε렀θηκε!")
+                                    st.success("✅ Η κατάσταση του χρήστη ενημερώθηκε!")
+                                    st.rerun()
+                                    
+                    st.markdown("**Αλλαγή Ρόλου Χρήστη**")
+                    if is_admin_user:
+                        st.info("🔒 Οι ρόλοι των Administrators μπορούν να αλλαχθούν μόνο απευθείας στη βάση δεδομένων.")
+                        st.selectbox("Ρόλος Χρήστη", options=["Administrator"], index=0, disabled=True, key=f"role_edit_disabled_{selected_user['Username']}")
+                    else:
+                        role_options = {
+                            "Team Leader": 2,
+                            "Consultant": 3,
+                            "ContentCreator": 4,
+                            "ContentManager": 5
+                        }
+                        current_role_name = selected_user["RoleName"]
+                        roles_list = list(role_options.keys())
+                        if current_role_name in roles_list:
+                            current_index = roles_list.index(current_role_name)
+                        else:
+                            roles_list = [current_role_name] + roles_list
+                            role_options[current_role_name] = selected_user["RoleID"]
+                            current_index = 0
+                            
+                        new_role_name = st.selectbox(
+                            "Επιλέξτε νέο ρόλο",
+                            options=roles_list,
+                            index=current_index,
+                            key=f"role_edit_select_{selected_user['Username']}"
+                        )
+                        
+                        if new_role_name != current_role_name:
+                            if st.button("Αποθήκευση Ρόλου", type="primary", key=f"btn_save_role_{selected_user['Username']}"):
+                                new_role_id = role_options[new_role_name]
+                                if admin_update_user_role(selected_user["UserID"], new_role_id):
+                                    delete_all_user_sessions(selected_user["UserID"])
+                                    write_system_log(
+                                        st.session_state.user_id,
+                                        "UPDATE_USER_ROLE",
+                                        f"Αλλαγή ρόλου χρήστη {selected_user['Username']} από {current_role_name} σε: {new_role_name}"
+                                    )
+                                    st.success(f"✅ Ο ρόλος του χρήστη ενημερώθηκε σε {new_role_name}!")
                                     st.rerun()
                                     
                     st.markdown("**Επαναφορά Κωδικού σε Default**")
@@ -3815,9 +3879,36 @@ def render_manual_content():
         6. **📖 Dev Docs**: Πρόσβαση στην τεχνική τεκμηρίωση του συστήματος απευθείας εντός της εφαρμογής. Επιτρέπεται η εναλλαγή μεταξύ της αρχιτεκτονικής του Dashboard & ETL Pipeline (`DEVELOPER_DOCS.md`) και του συγχρονισμού της βάσης (`sync_db_docs.md`), με πλήρη υποστήριξη οπτικοποίησης διαγραμμάτων ροής Mermaid.
         """)
 
-    # expander 10 - Changelog
-    with st.expander("📋 10. Ιστορικό Εκδόσεων (Changelog)"):
+    # expander 10 - ClassMarker Integration (v26.6.2a)
+    with st.expander("🎓 10. Πιστοποιήσεις ClassMarker (v26.6.2a)"):
         st.markdown("""
+        Η ενότητα **`🎓 ClassMarker`** (διαθέσιμη σε Administrators, ContentManagers, ContentCreators) παρέχει εργαλεία διαχείρισης της τράπεζας ερωτήσεων, των αποτελεσμάτων των εξετάσεων και των proctoring logs:
+        1. **📝 Διαχείριση Ερωτήσεων**:
+           - **Πίνακας Ερωτήσεων**: Προβάλλει όλες τις ερωτήσεις, την κατηγορία τους, τον τύπο τους, τους βαθμούς, την κατάσταση τοπικής τροποποίησης, το τρέχον στάδιο review και τον χρήστη στον οποίο έχουν ανατεθεί για έλεγχο (**"Ανάθεση Σε"**).
+           - **🛠️ Επεξεργασία (Αναδυόμενο Παράθυρο)**: Πατώντας το κουμπί, ανοίγει ένα modal popup (`st.dialog`) όπου μπορείτε να επεξεργαστείτε το κείμενο, την κατηγορία, τους βαθμούς και τις επιλογές απαντήσεων. Οι επιλογές απαντήσεων και τα σωστά/λάθη εμφανίζονται **δυναμικά μόνο αν ο τύπος της ερώτησης** το απαιτεί (π.χ. Multiple Choice).
+           - **📋 Ανάθεση Ελέγχου (Workflow)**: Επιλέξτε έναν εγγεγραμμένο reviewer και το στάδιο ελέγχου (Στάδιο 1: Αρχικός Έλεγχος, Στάδιο 2: Peer Review, Στάδιο 3: Τελική Έγκριση) για να του αναθέσετε την ερώτηση.
+        2. **📥 Εκκρεμότητες Ελέγχου**:
+           - Κάθε reviewer βλέπει στην ουρά του τις ερωτήσεις που του έχουν ανατεθεί. 
+           - Μπορεί να γράψει σημειώσεις ελέγχου και είτε να **προωθήσει** την ερώτηση στο επόμενο στάδιο ελέγχου (ή να την εγκρίνει οριστικά στο Στάδιο 5 / Verified) είτε να την **επιστρέψει** στον προηγούμενο υπεύθυνο.
+        3. **📤 Συγχρονισμός στο ClassMarker**:
+           - Οι ρόλοι Administrator και ContentManager μπορούν να πατήσουν **"Αποστολή στο ClassMarker"** για να συγχρονίσουν τις εγκεκριμένες αλλαγές μέσω του ClassMarker API (οι ContentCreators μπορούν να επεξεργαστούν τοπικά αλλά δεν έχουν δικαίωμα push).
+        4. **🛡️ Αποτελέσματα & Proctoring**:
+           - **Infraction Timeline**: Στις λεπτομέρειες των αποτελεσμάτων εξετάσεων, η εφαρμογή αναλύει αυτόματα το JSON των proctoring events (`ProctoringEventsJSON`) και σχεδιάζει το χρονολόγιο των ύποπτων ενεργειών (π.χ. αλλαγή tab, αντιγραφή/επικόλληση) του υποψηφίου.
+           - **Μαζικές Ενέργειες**: Επιλογή πολλαπλών αποτελεσμάτων και μαζική έγκριση, απόρριψη ή επαναφορά σε εκκρεμότητα.
+        """)
+
+    # expander - Changelog
+    with st.expander("📋 Ιστορικό Εκδόσεων (Changelog)"):
+        st.markdown("""
+        ### Έκδοση 26.6.2a (2026-06-30)
+        * **Νέο:** Προσθήκη **Συστήματος 3 Σταδίων Ελέγχου Ερωτήσεων** (Workflow Stages 1, 2, 3) με ουρά αξιολόγησης (`📥 Εκκρεμότητες Ελέγχου`).
+        * **Νέο:** Αναδυόμενο παράθυρο επεξεργασίας ερωτήσεων (`st.dialog`) με δυναμική εμφάνιση/επεξεργασία επιλογών απαντήσεων βάσει του τύπου της ερώτησης.
+        * **Νέο:** Στήλη υπευθύνου ανάθεσης ("Ανάθεση Σε") στον πίνακα της Τράπεζας Ερωτήσεων.
+        * **Νέο:** Αυτόματος συγχρονισμός τοπικά εγκεκριμένων αλλαγών ερωτήσεων στο ClassMarker API (`push_question_to_classmarker`).
+        * **Νέο:** Προβολή proctoring infraction timeline με αυτόματη αποκωδικοποίηση JSON (από `ProctoringEventsJSON`) χωρίς ανάγκη εξωτερικού πίνακα.
+        * **Νέο:** Επεξεργασία ρόλων χρηστών (εκτός Administrators που αλλάζουν μόνο μέσω βάσης).
+        * **Νέο:** Υποστήριξη ρόλων `ContentCreator` ( Consultant + ClassMarker ερωτήσεις χωρίς ETL) και `ContentManager` ( TeamLeader + πλήρης διαχείριση ClassMarker).
+
         ### Έκδοση 26.5.6a (2026-06-25)
         * **Νέο:** Μετάβαση σε **Ασύγχρονο Μηχανισμό ETL (Asynchronous Queue & Worker)**. Οι συγχρονισμοί εκτελούνται πλέον στο παρασκήνιο (background) μέσω της ουράς `ETL_Queue`, αποτρέποντας το πάγωμα της Streamlit εφαρμογής και επιτρέποντας την ασφαλή εκτέλεση διεργασιών μεγάλης διάρκειας.
         * **Νέο:** Προσθήκη καρτέλας **`🖥️ ETL Job Monitor`** με δυνατότητα ζωντανής παρακολούθησης της ροής των logs (live stream terminal logs) για οποιαδήποτε ενεργή ή παρελθούσα διεργασία.
@@ -3850,6 +3941,869 @@ def render_manual_content():
         * **Νέο:** Δυναμική ομαδοποίηση (Group By) και εξαγωγή σε Excel στους Χρόνους Απόκρισης (KPIs).
         """)
 
+# --- ClassMarker UI Helper Functions & Pages ---
+
+def queue_classmarker_job(job_type, username):
+    engine = get_db_engine()
+    if not engine:
+        st.error("❌ Αδυναμία σύνδεσης στη βάση δεδομένων.")
+        return False
+    try:
+        with engine.begin() as conn:
+            existing = conn.execute(
+                text("SELECT JobID FROM ETL_Queue WHERE JobType = :job_type AND Status IN ('Pending', 'Running')"),
+                {"job_type": job_type}
+            ).fetchone()
+            if existing:
+                st.warning(f"⚠️ Υπάρχει ήδη μια εκκρεμής ή ενεργή διεργασία συγχρονισμού '{job_type}' (Job #{existing[0]}). Παρακαλώ περιμένετε να ολοκληρωθεί.")
+                return False
+            
+            conn.execute(
+                text(
+                    "INSERT INTO ETL_Queue (JobType, Status, CreatedBy, CreatedAt) "
+                    "VALUES (:job_type, 'Pending', :user, :now)"
+                ),
+                {"job_type": job_type, "user": username, "now": datetime.now()}
+            )
+        return True
+    except Exception as e:
+        st.error(f"❌ Σφάλμα κατά την καταχώρηση της διεργασίας: {e}")
+        return False
+
+def update_local_question(question_id, category_id, text_content, options_json, points, active):
+    engine = get_db_engine()
+    if not engine:
+        return False
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE CM_Questions "
+                    "SET CategoryID = :cat_id, QuestionText = :q_text, OptionsJSON = :options, "
+                    "    Points = :points, Active = :active, IsLocallyModified = 1 "
+                    "WHERE QuestionID = :id"
+                ),
+                {
+                    "cat_id": category_id,
+                    "q_text": text_content,
+                    "options": options_json,
+                    "points": points,
+                    "active": 1 if active else 0,
+                    "id": question_id
+                }
+            )
+        return True
+    except Exception as e:
+        st.error(f"❌ Σφάλμα κατά την αποθήκευση της ερώτησης: {e}")
+        return False
+
+def assign_question_reviewer(question_id, reviewer_id, current_user_id, target_stage):
+    engine = get_db_engine()
+    if not engine:
+        return False
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE CM_Questions "
+                    "SET AssignedToUserID = :rev_id, AssignedByUserID = :curr_id, "
+                    "    PreviousAssigneeID = :curr_id, "
+                    "    ReviewStage = :stage, IsLocallyModified = 1 "
+                    "WHERE QuestionID = :id"
+                ),
+                {
+                    "rev_id": reviewer_id,
+                    "curr_id": current_user_id,
+                    "stage": target_stage,
+                    "id": question_id
+                }
+            )
+        return True
+    except Exception as e:
+        st.error(f"❌ Σφάλμα κατά την ανάθεση ελέγχου: {e}")
+        return False
+
+def push_question_to_classmarker(question_id):
+    engine = get_db_engine()
+    if not engine:
+        st.error("❌ Αδυναμία σύνδεσης στη βάση δεδομένων.")
+        return False
+        
+    try:
+        with engine.connect() as conn:
+            q = conn.execute(
+                text("SELECT CategoryID, QuestionType, QuestionText, OptionsJSON, Points, Active FROM CM_Questions WHERE QuestionID = :id"),
+                {"id": question_id}
+            ).fetchone()
+    except Exception as e:
+        st.error(f"❌ Σφάλμα κατά την ανάγνωση της ερώτησης: {e}")
+        return False
+        
+    if not q:
+        st.error("❌ Η ερώτηση δεν βρέθηκε στη βάση δεδομένων.")
+        return False
+        
+    category_id, q_type, q_text, options_json, points, active = q
+    
+    api_key = st.secrets.get("CLASSMARKER_API_KEY", "")
+    api_secret = st.secrets.get("CLASSMARKER_API_SECRET", "")
+    
+    if not api_key or not api_secret or api_key == "your_api_key" or api_secret == "your_api_secret":
+        st.warning(f"⚠️ [MOCK] Mock Sync: Αποστολή ερώτησης ID {question_id} στο ClassMarker επιτυχής!")
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("UPDATE CM_Questions SET IsLocallyModified = 0, SyncedAt = :now WHERE QuestionID = :id"),
+                    {"now": datetime.now(), "id": question_id}
+                )
+            return True
+        except Exception as e:
+            st.error(f"❌ Σφάλμα: {e}")
+            return False
+            
+    try:
+        timestamp = str(int(time.time()))
+        signature = hashlib.sha256((timestamp + api_secret).encode('utf-8')).hexdigest()
+        
+        # Real API request
+        url = f"https://api.classmarker.com/v1/questions.json?api_key={api_key}&signature={signature}&timestamp={timestamp}"
+        
+        opts = []
+        try:
+            raw_opts = json.loads(options_json)
+            for o in raw_opts:
+                opts.append({
+                    "text": o.get("text", ""),
+                    "correct": 1 if o.get("correct", False) else 0
+                })
+        except Exception:
+            opts = []
+            
+        payload = {
+            "question_id": question_id,
+            "category_id": category_id,
+            "text": q_text,
+            "points": float(points),
+            "status": "active" if active else "inactive"
+        }
+        
+        if q_type in ["multiple_choice", "true_false", "multiplechoice", "truefalse", "multipleresponse"]:
+            payload["options"] = opts
+            
+        res = requests.post(url, json=payload, timeout=15)
+        if res.status_code in [200, 201]:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("UPDATE CM_Questions SET IsLocallyModified = 0, SyncedAt = :now WHERE QuestionID = :id"),
+                    {"now": datetime.now(), "id": question_id}
+                )
+            return True
+        else:
+            st.error(f"❌ Το ClassMarker API επέστρεψε σφάλμα {res.status_code}: {res.text}")
+            return False
+    except Exception as e:
+        st.error(f"❌ Σφάλμα κατά τη σύνδεση με το API: {e}")
+        return False
+
+def show_reviewer_queue(current_user_id):
+    st.markdown("### 📥 Ερωτήσεις προς Έλεγχο (Review Queue)")
+    
+    engine = get_db_engine()
+    if not engine:
+        st.error("❌ Αδυναμία σύνδεσης στη βάση δεδομένων.")
+        return
+        
+    try:
+        with engine.connect() as conn:
+            # Load active users for forwarding
+            users_res = conn.execute(
+                text("SELECT UserID, DisplayName, Username FROM Users WHERE IsActive = 1 ORDER BY DisplayName")
+            ).fetchall()
+            users_map = {f"{r[1]} ({r[2]})": r[0] for r in users_res}
+            
+            # Fetch assigned questions
+            query = text(
+                "SELECT q.QuestionID, q.CategoryID, c.CategoryName, q.QuestionType, q.QuestionText, "
+                "       q.OptionsJSON, q.Points, q.Active, q.ReviewStage, q.ReviewNotes, q.PreviousAssigneeID, "
+                "       u.DisplayName AS AssignedByName "
+                "FROM CM_Questions q "
+                "JOIN CM_Categories c ON q.CategoryID = c.CategoryID "
+                "LEFT JOIN Users u ON q.AssignedByUserID = u.UserID "
+                "WHERE q.AssignedToUserID = :user_id AND q.ReviewStage IN (2, 3, 4)"
+            )
+            df_reviews = pd.read_sql(query, conn, params={"user_id": current_user_id})
+    except Exception as e:
+        st.error(f"❌ Σφάλμα κατά τη φόρτωση της ουράς ελέγχου: {e}")
+        return
+        
+    if df_reviews.empty:
+        st.info("✅ Δεν έχετε εκκρεμείς ερωτήσεις για έλεγχο.")
+        return
+        
+    st.markdown(f"Έχετε **{len(df_reviews)}** ερωτήσεις προς αξιολόγηση.")
+    
+    # Simple Stage display mapper
+    stage_names = {
+        2: "Στάδιο 1: Αρχικός Έλεγχος",
+        3: "Στάδιο 2: Peer Review",
+        4: "Στάδιο 3: Τελική Έγκριση"
+    }
+    
+    df_display = df_reviews.copy()
+    df_display["Στάδιο"] = df_display["ReviewStage"].map(stage_names)
+    
+    st.dataframe(
+        df_display[["QuestionID", "CategoryName", "QuestionType", "QuestionText", "Στάδιο", "AssignedByName"]],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "QuestionID": st.column_config.NumberColumn("ID", format="%d"),
+            "CategoryName": "Κατηγορία",
+            "QuestionType": "Τύπος",
+            "QuestionText": "Κείμενο Ερώτησης",
+            "Στάδιο": "Στάδιο Ελέγχου",
+            "AssignedByName": "Ανατέθηκε Από"
+        }
+    )
+    
+    st.markdown("#### 🔍 Αναλυτική Αξιολόγηση Ερώτησης")
+    sel_rev_id = st.selectbox(
+        "Επιλέξτε ID ερώτησης για αξιολόγηση:",
+        options=df_reviews["QuestionID"].tolist(),
+        format_func=lambda x: f"ID: {x} - {df_reviews[df_reviews['QuestionID'] == x]['QuestionText'].values[0][:80]}...",
+        key="sel_rev_id_box"
+    )
+    
+    if sel_rev_id:
+        q_row = df_reviews[df_reviews["QuestionID"] == sel_rev_id].iloc[0]
+        st.info(f"**Ερώτηση (ID {q_row['QuestionID']}):** {q_row['QuestionText']}")
+        st.markdown(f"**Κατηγορία:** {q_row['CategoryName']} | **Τύπος:** {q_row['QuestionType']} | **Στάδιο:** {stage_names.get(q_row['ReviewStage'])}")
+        st.markdown(f"**Βαθμοί:** {q_row['Points']} | **Ανατέθηκε από:** {q_row['AssignedByName'] or 'N/A'}")
+        
+        # Display Options
+        try:
+            options = json.loads(q_row["OptionsJSON"])
+            if options:
+                st.markdown("**Επιλογές Απαντήσεων (Read-Only):**")
+                for idx, opt in enumerate(options, 1):
+                    is_correct = opt.get("correct", False)
+                    opt_text = opt.get("text", "")
+                    if is_correct:
+                        st.markdown(f"✅ {idx}. **{opt_text} (Σωστό)**")
+                    else:
+                        st.markdown(f"❌ {idx}. {opt_text}")
+        except Exception:
+            pass
+            
+        st.markdown("---")
+        st.markdown("**✍️ Σημειώσεις & Ενέργειες Αξιολόγησης**")
+        rev_notes = st.text_area("Σημειώσεις / Σχόλια Ελέγχου", value=q_row["ReviewNotes"] or "", key=f"rev_notes_input_{sel_rev_id}")
+        
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("↩️ Επιστροφή στον Προηγούμενο", use_container_width=True, type="secondary", key=f"btn_return_{sel_rev_id}"):
+                prev_id = q_row["PreviousAssigneeID"] or q_row["AssignedByUserID"] or current_user_id
+                new_stage = max(1, int(q_row["ReviewStage"]) - 1)
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "UPDATE CM_Questions "
+                                "SET AssignedToUserID = :prev_id, AssignedByUserID = :curr_id, "
+                                "    ReviewStage = :stage, ReviewNotes = :notes, IsLocallyModified = 1 "
+                                "WHERE QuestionID = :id"
+                            ),
+                            {
+                                "prev_id": prev_id,
+                                "curr_id": current_user_id,
+                                "stage": new_stage,
+                                "notes": rev_notes if rev_notes else None,
+                                "id": sel_rev_id
+                            }
+                        )
+                    st.warning("🔄 Η ερώτηση επιστράφηκε στον προηγούμενο υπεύθυνο.")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Σφάλμα: {e}")
+                    
+        with col_btn2:
+            current_stage = int(q_row["ReviewStage"])
+            if current_stage == 4:
+                # Stage 3 review, i.e., final approval promotes to stage 5 (verified) and clears assignment
+                btn_label = "✅ Οριστική Έγκριση ερώτησης (Στάδιο 5)"
+                if st.button(btn_label, use_container_width=True, type="primary", key=f"btn_promote_{sel_rev_id}"):
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text(
+                                    "UPDATE CM_Questions "
+                                    "SET AssignedToUserID = NULL, AssignedByUserID = NULL, PreviousAssigneeID = :curr_id, "
+                                    "    ReviewStage = 5, ReviewNotes = :notes, IsLocallyModified = 1 "
+                                    "WHERE QuestionID = :id"
+                                ),
+                                {
+                                    "curr_id": current_user_id,
+                                    "notes": rev_notes if rev_notes else None,
+                                    "id": sel_rev_id
+                                }
+                            )
+                        st.success("✅ Η ερώτηση εγκρίθηκε οριστικά και σημειώθηκε ως verified (Στάδιο 5)!")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Σφάλμα: {e}")
+            else:
+                next_stage = current_stage + 1
+                st.write(f"**Προώθηση στο επόμενο στάδιο: {stage_names.get(next_stage)}**")
+                sel_next_reviewer = st.selectbox(
+                    "Επιλέξτε επόμενο υπεύθυνο ελέγχου:",
+                    options=["-- Επιλογή Χρήστη --"] + list(users_map.keys()),
+                    key=f"sel_next_reviewer_{sel_rev_id}"
+                )
+                
+                if st.button("▶️ Προώθηση / Έγκριση", use_container_width=True, type="primary", key=f"btn_promote_{sel_rev_id}"):
+                    if sel_next_reviewer == "-- Επιλογή Χρήστη --":
+                        st.warning("⚠️ Παρακαλώ επιλέξτε τον επόμενο χρήστη για την ανάθεση.")
+                    else:
+                        next_user_id = users_map[sel_next_reviewer]
+                        try:
+                            with engine.begin() as conn:
+                                conn.execute(
+                                    text(
+                                        "UPDATE CM_Questions "
+                                        "SET AssignedToUserID = :next_uid, AssignedByUserID = :curr_id, "
+                                        "    PreviousAssigneeID = :curr_id, "
+                                        "    ReviewStage = :stage, ReviewNotes = :notes, IsLocallyModified = 1 "
+                                        "WHERE QuestionID = :id"
+                                    ),
+                                    {
+                                        "next_uid": next_user_id,
+                                        "curr_id": current_user_id,
+                                        "stage": next_stage,
+                                        "notes": rev_notes if rev_notes else None,
+                                        "id": sel_rev_id
+                                    }
+                                )
+                            st.success(f"▶️ Η ερώτηση προωθήθηκε στον/στην {sel_next_reviewer}.")
+                            time.sleep(1)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Σφάλμα: {e}")
+
+@st.dialog("🛠️ Επεξεργασία Ερώτησης", width="large")
+def edit_question_dialog(q_row, categories_df, users_map, can_manage):
+    question_id = int(q_row["QuestionID"])
+    st.markdown(f"### Επεξεργασία Ερώτησης (ID: {question_id})")
+    
+    edit_q_text = st.text_area("Κείμενο Ερώτησης", value=q_row["QuestionText"], key=f"dialog_edit_text_{question_id}", height=120)
+    
+    cat_options_map = dict(zip(categories_df["CategoryName"], categories_df["CategoryID"]))
+    current_cat_name = q_row["CategoryName"]
+    cat_list = list(cat_options_map.keys())
+    cat_idx = cat_list.index(current_cat_name) if current_cat_name in cat_list else 0
+    
+    edit_cat_name = st.selectbox("Κατηγορία", options=cat_list, index=cat_idx, key=f"dialog_edit_cat_{question_id}")
+    edit_cat_id = cat_options_map[edit_cat_name]
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        edit_points = st.number_input("Βαθμοί", min_value=0.0, max_value=100.0, value=float(q_row["Points"]), step=0.5, key=f"dialog_edit_pts_{question_id}")
+    with col2:
+        st.write(" ") # align
+        st.write(" ")
+        edit_active = st.checkbox("Ενεργή", value=bool(q_row["Active"]), key=f"dialog_edit_act_{question_id}")
+        
+    # Edit choices/options based on type
+    options = []
+    try:
+        options = json.loads(q_row["OptionsJSON"])
+    except Exception:
+        pass
+        
+    edited_options = []
+    q_type = q_row["QuestionType"]
+    
+    # We display choices if the question type is multiple choice or true/false or multi response
+    if q_type in ["multiple_choice", "true_false", "multiplechoice", "truefalse", "multipleresponse"]:
+        st.write("---")
+        st.markdown("**👉 Επιλογές Απαντήσεων:**")
+        if options:
+            for o_idx, opt in enumerate(options):
+                col_o1, col_o2 = st.columns([4, 1])
+                with col_o1:
+                    opt_t = st.text_input(f"Επιλογή {o_idx + 1}", value=opt.get("text", ""), key=f"dialog_opt_t_{question_id}_{o_idx}")
+                with col_o2:
+                    opt_c = st.checkbox("Σωστή", value=opt.get("correct", False), key=f"dialog_opt_c_{question_id}_{o_idx}")
+                edited_options.append({"text": opt_t, "correct": opt_c})
+        else:
+            st.caption("Δεν βρέθηκαν προκαθορισμένες επιλογές.")
+            
+    st.write("---")
+    col_save, col_push = st.columns(2)
+    with col_save:
+        if st.button("💾 Αποθήκευση στο Support Hub", use_container_width=True, type="primary", key=f"dialog_btn_save_{question_id}"):
+            opt_json_str = json.dumps(edited_options, ensure_ascii=False) if edited_options else q_row["OptionsJSON"]
+            if update_local_question(question_id, edit_cat_id, edit_q_text, opt_json_str, edit_points, edit_active):
+                st.success("✅ Η ερώτηση αποθηκεύτηκε τοπικά!")
+                time.sleep(1)
+                st.rerun()
+                
+    with col_push:
+        if can_manage:
+            is_mod = (q_row["IsLocallyModified"] == 1)
+            btn_disabled = not is_mod
+            if st.button("📤 Αποστολή στο ClassMarker", use_container_width=True, disabled=btn_disabled, key=f"dialog_btn_push_{question_id}"):
+                with st.spinner("Αποστολή στο ClassMarker API..."):
+                    if push_question_to_classmarker(question_id):
+                        st.success("✅ Οι αλλαγές συγχρονίστηκαν στο ClassMarker!")
+                        time.sleep(1)
+                        st.rerun()
+        else:
+            st.button("📤 Αποστολή στο ClassMarker", use_container_width=True, disabled=True, help="Μόνο Administrators και ContentManagers μπορούν να στείλουν αλλαγές.")
+
+def show_classmarker_questions(can_edit, can_manage):
+    st.markdown("### 📝 Τράπεζα Ερωτήσεων ClassMarker")
+    
+    engine = get_db_engine()
+    if not engine:
+        st.error("❌ Αδυναμία σύνδεσης στη βάση δεδομένων.")
+        return
+        
+    col_title, col_sync = st.columns([3, 1])
+    with col_title:
+        st.caption("Προβολή των συγχρονισμένων ερωτήσεων και κατηγοριών από το ClassMarker API.")
+    with col_sync:
+        if can_manage:
+            if st.button("🔄 Συγχρονισμός Ερωτήσεων", use_container_width=True, type="primary"):
+                if queue_classmarker_job('CLASSMARKER_QUESTIONS_SYNC', st.session_state.username):
+                    st.success("✅ Η διεργασία συγχρονισμού ερωτήσεων προστέθηκε στην ουρά (ETL Queue).")
+        else:
+            st.button("🔄 Συγχρονισμός Ερωτήσεων", use_container_width=True, disabled=True, help="Δεν έχετε δικαιώματα εκτέλεσης ETL.")
+            
+    try:
+        with engine.connect() as conn:
+            categories_df = pd.read_sql("SELECT CategoryID, CategoryName FROM CM_Categories ORDER BY CategoryName", conn)
+            questions_df = pd.read_sql(
+                "SELECT q.QuestionID, q.CategoryID, c.CategoryName, q.QuestionType, q.QuestionText, "
+                "       q.OptionsJSON, q.Points, q.Active, q.IsLocallyModified, q.ReviewStage, "
+                "       u.DisplayName AS AssigneeName "
+                "FROM CM_Questions q "
+                "JOIN CM_Categories c ON q.CategoryID = c.CategoryID "
+                "LEFT JOIN Users u ON q.AssignedToUserID = u.UserID", 
+                conn
+            )
+            # Load active users list for assignment
+            users_res = conn.execute(
+                text("SELECT UserID, DisplayName, Username FROM Users WHERE IsActive = 1 ORDER BY DisplayName")
+            ).fetchall()
+            users_map = {f"{r[1]} ({r[2]})": r[0] for r in users_res}
+    except Exception as e:
+        st.error(f"❌ Σφάλμα κατά τη φόρτωση δεδομένων: {e}")
+        return
+        
+    if questions_df.empty:
+        st.info("Δεν βρέθηκαν συγχρονισμένες ερωτήσεις στη βάση δεδομένων. Παρακαλώ ξεκινήστε συγχρονισμό.")
+        return
+        
+    col_filter1, col_filter2, col_filter3 = st.columns([1, 1, 2])
+    with col_filter1:
+        cat_options = ["Όλες οι Κατηγορίες"] + sorted(list(categories_df["CategoryName"].unique()))
+        selected_cat = st.selectbox("📂 Φιλτράρισμα ανά Κατηγορία", cat_options, key="select_cat_filter")
+    with col_filter2:
+        type_options = ["Όλοι οι Τύποι"] + sorted(list(questions_df["QuestionType"].unique()))
+        selected_type = st.selectbox("❓ Τύπος Ερώτησης", type_options, key="select_type_filter")
+    with col_filter3:
+        search_query = st.text_input("🔍 Αναζήτηση στο κείμενο της ερώτησης", placeholder="Πληκτρολογήστε λέξεις κλειδιά...", key="search_query_input")
+        
+    filtered_qs = questions_df.copy()
+    if selected_cat != "Όλες οι Κατηγορίες":
+        filtered_qs = filtered_qs[filtered_qs["CategoryName"] == selected_cat]
+    if selected_type != "Όλοι οι Τύποι":
+        filtered_qs = filtered_qs[filtered_qs["QuestionType"] == selected_type]
+    if search_query:
+        filtered_qs = filtered_qs[filtered_qs["QuestionText"].str.contains(search_query, case=False, na=False)]
+        
+    st.markdown(f"Βρέθηκαν **{len(filtered_qs)}** ερωτήσεις.")
+    
+    # Display table showing status indicators
+    df_display = filtered_qs.copy()
+    df_display["Κατάσταση Αλλαγών"] = df_display["IsLocallyModified"].map({1: "⚠️ Local Edits", 0: "✅ Synced"})
+    stage_labels = {1: "Draft", 2: "Stage 1", 3: "Stage 2", 4: "Stage 3", 5: "Verified"}
+    df_display["Στάδιο Review"] = df_display["ReviewStage"].map(stage_labels)
+    
+    st.dataframe(
+        df_display[["QuestionID", "CategoryName", "QuestionType", "QuestionText", "Points", "Active", "Κατάσταση Αλλαγών", "Στάδιο Review", "AssigneeName"]],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "QuestionID": st.column_config.NumberColumn("ID", format="%d"),
+            "CategoryName": "Κατηγορία",
+            "QuestionType": "Τύπος",
+            "QuestionText": "Κείμενο Ερώτησης",
+            "Points": st.column_config.NumberColumn("Βαθμοί", format="%.1f"),
+            "Active": st.column_config.CheckboxColumn("Ενεργή"),
+            "Κατάσταση Αλλαγών": "Status",
+            "Στάδιο Review": "Στάδιο",
+            "AssigneeName": "Ανάθεση Σε"
+        }
+    )
+    
+    st.markdown("#### 🔍 Λεπτομέρειες & Επεξεργασία Ερώτησης")
+    selected_q_id = st.selectbox(
+        "Επιλογή Ερώτησης για προβολή/επεξεργασία:",
+        options=filtered_qs["QuestionID"].tolist(),
+        format_func=lambda x: f"ID: {x} - {filtered_qs[filtered_qs['QuestionID'] == x]['QuestionText'].values[0][:80]}...",
+        key="select_q_id_details"
+    )
+    
+    if selected_q_id:
+        q_row = filtered_qs[filtered_qs["QuestionID"] == selected_q_id].iloc[0]
+        st.info(f"**Ερώτηση (ID {q_row['QuestionID']}):** {q_row['QuestionText']}")
+        st.markdown(f"**Κατηγορία:** {q_row['CategoryName']} | **Τύπος:** {q_row['QuestionType']} | **Βαθμοί:** {q_row['Points']} | **Κατάσταση:** {'Ενεργή' if q_row['Active'] else 'Ανενεργή'}")
+        
+        # Display current options
+        options = []
+        try:
+            options = json.loads(q_row["OptionsJSON"])
+            if options:
+                st.markdown("**Επιλογές Απαντήσεων:**")
+                for idx, opt in enumerate(options, 1):
+                    is_correct = opt.get("correct", False)
+                    opt_text = opt.get("text", "")
+                    if is_correct:
+                        st.markdown(f"✅ {idx}. **{opt_text} (Σωστό)**")
+                    else:
+                        st.markdown(f"❌ {idx}. {opt_text}")
+        except Exception:
+            st.caption("Δεν υπάρχουν δομημένες επιλογές (π.χ. ερώτηση ελεύθερου κειμένου ή σφάλμα JSON).")
+
+                # Edit Section (visible to Admin, ContentManager, ContentCreator)
+        if can_edit:
+            st.markdown("---")
+            if st.button("🛠️ Επεξεργασία Ερώτησης (Αναδυόμενο Παράθυρο)", use_container_width=True, type="primary", key=f"btn_trigger_edit_{selected_q_id}"):
+                edit_question_dialog(q_row, categories_df, users_map, can_manage)
+
+            # Assignment Section
+            with st.expander("📋 Ανάθεση Ελέγχου (Workflow)", expanded=False):
+                sel_assignee = st.selectbox(
+                    "Επιλέξτε χρήστη για τον έλεγχο:",
+                    options=["-- Επιλογή Χρήστη --"] + list(users_map.keys()),
+                    key=f"sel_assignee_{selected_q_id}"
+                )
+                stage_mapping = {
+                    "Στάδιο 1: Αρχικός Έλεγχος (Peer Review Stage 1)": 2,
+                    "Στάδιο 2: Peer Review (Peer Review Stage 2)": 3,
+                    "Στάδιο 3: Τελική Έγκριση (Final Stage 3)": 4
+                }
+                sel_stage_label = st.selectbox(
+                    "Στάδιο Ελέγχου:",
+                    options=list(stage_mapping.keys()),
+                    key=f"sel_stage_{selected_q_id}"
+                )
+                target_stage = stage_mapping[sel_stage_label]
+                
+                if st.button("🚀 Ανάθεση & Προώθηση", use_container_width=True, type="secondary", key=f"btn_assign_{selected_q_id}"):
+                    if sel_assignee == "-- Επιλογή Χρήστη --":
+                        st.warning("⚠️ Παρακαλώ επιλέξτε έναν έγκυρο χρήστη.")
+                    else:
+                        reviewer_user_id = users_map[sel_assignee]
+                        if assign_question_reviewer(selected_q_id, reviewer_user_id, st.session_state.user_id, target_stage):
+                            st.success(f"🚀 Η ερώτηση ανατέθηκε στον/στην {sel_assignee} στο {sel_stage_label}!")
+                            time.sleep(1)
+                            st.rerun()
+
+def show_classmarker_results(can_manage):
+    st.markdown("### 🛡️ Αποτελέσματα & Έλεγχος Proctoring")
+    
+    engine = get_db_engine()
+    if not engine:
+        st.error("❌ Αδυναμία σύνδεσης στη βάση δεδομένων.")
+        return
+        
+    col_title, col_sync = st.columns([3, 1])
+    with col_title:
+        st.caption("Προβολή των συγχρονισμένων αποτελεσμάτων εξετάσεων και των συμβάντων Proctoring.")
+    with col_sync:
+        if can_manage:
+            if st.button("🔄 Συγχρονισμός Αποτελεσμάτων", use_container_width=True, type="primary"):
+                if queue_classmarker_job('CLASSMARKER_RESULTS_SYNC', st.session_state.username):
+                    st.success("✅ Η διεργασία συγχρονισμού αποτελεσμάτων προστέθηκε στην ουρά (ETL Queue).")
+        else:
+            st.button("🔄 Συγχρονισμός Αποτελεσμάτων", use_container_width=True, disabled=True)
+            
+    try:
+        with engine.connect() as conn:
+            results_df = pd.read_sql(
+                "SELECT ResultID, CandidateName, Score, "
+                "       (DurationSeconds / 60) AS DurationMinutes, "
+                "       ProctoringEventsCount AS InfractionCount, "
+                "       ReviewStatus, ReviewedBy, ReviewedAt, CompanyCandidateID, CompanyPartnerID, "
+                "       FinishedAt "
+                "FROM CM_TestResults "
+                "ORDER BY FinishedAt DESC", 
+                conn
+            )
+    except Exception as e:
+        st.error(f"❌ Σφάλμα κατά τη φόρτωση δεδομένων: {e}")
+        return
+        
+    if results_df.empty:
+        st.info("Δεν βρέθηκαν συγχρονισμένες αποτελέσματα στη βάση δεδομένων. Παρακαλώ ξεκινήστε συγχρονισμό.")
+        return
+        
+    # Multi-select mass action controls
+    st.markdown("#### ⚡ Μαζικές Ενέργειες Αξιολόγησης (Mass Actions)")
+    col_mass_status, col_mass_notes, col_mass_btn = st.columns([1, 2, 1])
+    with col_mass_status:
+        mass_status = st.selectbox("Αλλαγή Κατάστασης", ["Approved", "Rejected", "Pending"], key="mass_status_select")
+    with col_mass_notes:
+        mass_notes = st.text_input("Κοινό Σχόλιο / Σημειώσεις", placeholder="Συμπληρώστε αν θέλετε...", key="mass_notes_input")
+    with col_mass_btn:
+        st.write(" ") # alignment
+        st.write(" ")
+        run_mass_action = st.button("⚡ Εκτέλεση", use_container_width=True, key="mass_action_run_btn")
+        
+    st.markdown("---")
+    
+    # Render interactive grid with selection
+    # Using row selections via dataframe configurations
+    selected_rows = []
+    
+    # We will use st.data_editor to get row selection status
+    df_for_edit = results_df.copy()
+    df_for_edit.insert(0, "Επιλογή", False)
+    
+    edited_df = st.data_editor(
+        df_for_edit[["Επιλογή", "ResultID", "CandidateName", "Score", "DurationMinutes", "InfractionCount", "ReviewStatus", "FinishedAt"]],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Επιλογή": st.column_config.CheckboxColumn("Επιλογή", default=False),
+            "ResultID": st.column_config.NumberColumn("ID", format="%d"),
+            "CandidateName": "Candidate",
+            "Score": st.column_config.NumberColumn("Score (%)", format="%d"),
+            "DurationMinutes": st.column_config.NumberColumn("Duration (min)", format="%d"),
+            "InfractionCount": st.column_config.NumberColumn("Proctor Flags", format="%d"),
+            "ReviewStatus": "Status",
+            "FinishedAt": "Finished At"
+        },
+        disabled=["ResultID", "CandidateName", "Score", "DurationMinutes", "InfractionCount", "ReviewStatus", "FinishedAt"],
+        key="data_editor_results_sync"
+    )
+    
+    # Filter selected results
+    selected_res_ids = edited_df[edited_df["Επιλογή"] == True]["ResultID"].tolist()
+    
+    if run_mass_action:
+        if not selected_res_ids:
+            st.warning("⚠️ Δεν έχετε επιλέξει κανένα αποτέλεσμα για μαζική επεξεργασία.")
+        else:
+            try:
+                with engine.begin() as conn:
+                    # Run bulk updates
+                    conn.execute(
+                        text(
+                            "UPDATE CM_TestResults "
+                            "SET ReviewStatus = :status, ReviewerNotes = :notes, "
+                            "    ReviewedBy = :reviewer, ReviewedAt = :now "
+                            "WHERE ResultID IN (" + ",".join([str(x) for x in selected_res_ids]) + ")"
+                        ),
+                        {
+                            "status": mass_status,
+                            "notes": mass_notes if mass_notes else None,
+                            "reviewer": st.session_state.username,
+                            "now": datetime.now()
+                        }
+                    )
+                st.success(f"✅ Ενημερώθηκαν {len(selected_res_ids)} αποτελέσματα με επιτυχία.")
+                time.sleep(1)
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Σφάλμα: {e}")
+                
+    st.markdown("#### 🔍 Λεπτομέρειες Αποτελέσματος & Timeline Proctoring")
+    selected_res_id = st.selectbox(
+        "Επιλογή Αποτελέσματος για προβολή λεπτομερειών:",
+        options=results_df["ResultID"].tolist(),
+        format_func=lambda x: f"ID: {x} - Candidate: {results_df[results_df['ResultID'] == x]['CandidateName'].values[0]} (Score: {results_df[results_df['ResultID'] == x]['Score'].values[0]}%)",
+        key="selectbox_selected_res_id"
+    )
+    
+    if selected_res_id:
+        res_row = results_df[results_df["ResultID"] == selected_res_id].iloc[0]
+        
+        try:
+            with engine.connect() as conn:
+                res_details = conn.execute(
+                    text("SELECT ReviewerNotes, CompanyCandidateID, CompanyPartnerID, ProctoringEventsJSON FROM CM_TestResults WHERE ResultID = :id"),
+                    {"id": selected_res_id}
+                ).fetchone()
+        except Exception as e:
+            st.error(f"❌ Σφάλμα: {e}")
+            return
+            
+        rev_notes = res_details[0] if res_details else ""
+        comp_cand_id = res_details[1] if res_details else ""
+        comp_part_id = res_details[2] if res_details else ""
+        raw_events = res_details[3] if res_details and len(res_details) > 3 else None
+        
+        infractions_list = []
+        if raw_events:
+            try:
+                infractions_list = json.loads(raw_events)
+            except Exception:
+                pass
+                
+        col_res1, col_res2 = st.columns([1, 1])
+        with col_res1:
+            st.markdown(f"**Candidate:** {res_row['CandidateName']}")
+            st.markdown(f"**Score:** {res_row['Score']}% | **Duration:** {res_row['DurationMinutes']} minutes")
+            st.markdown(f"**Finished At:** {res_row['FinishedAt']}")
+            st.markdown(f"**Infractions / Flag Count:** `{res_row['InfractionCount']}`")
+            
+        with col_res2:
+            st.markdown(f"**Current Status:** `{res_row['ReviewStatus']}`")
+            st.markdown(f"**Reviewed By:** {res_row['ReviewedBy'] or 'N/A'}")
+            st.markdown(f"**Reviewed At:** {res_row['ReviewedAt'] or 'N/A'}")
+            
+        # Display Proctoring Infraction Timeline
+        if infractions_list:
+            st.warning(f"🚨 Ανιχνεύτηκαν {len(infractions_list)} συμβάντα proctoring (Flagged Events)!")
+            with st.expander("👁️ Προβολή Infraction Timeline", expanded=True):
+                for idx, log in enumerate(infractions_list, 1):
+                    log_type = log.get("LogType", log.get("type", "Infraction"))
+                    log_time = log.get("LogTime", log.get("time", ""))
+                    log_details = log.get("LogDetails", log.get("detail", log.get("details", "")))
+                    st.markdown(
+                        f"**{idx}. [{log_type}] ({log_time})** - {log_details}"
+                    )
+        else:
+            st.success("✅ Δεν καταγράφηκαν ύποπτα συμβάντα κατά την εξέταση (Proctoring Log clear).")
+            
+        st.markdown("---")
+        st.markdown("**✍️ Διαχείριση & Αντιστοίχιση Αποτελέσματος**")
+        
+        col_id1, col_id2 = st.columns(2)
+        with col_id1:
+            company_cand_id = st.text_input("Company Candidate ID (π.χ. ΑΜ/Κωδικός)", value=comp_cand_id if comp_cand_id else "", key=f"comp_cand_id_field_{selected_res_id}")
+        with col_id2:
+            company_part_id = st.text_input("Company Partner ID (Συνεργάτης)", value=comp_part_id if comp_part_id else "", key=f"comp_part_id_field_{selected_res_id}")
+            
+        single_notes = st.text_area("Σχόλια / Σημειώσεις Διαχειριστή", value=rev_notes if rev_notes else "", key=f"reviewer_notes_field_{selected_res_id}")
+        
+        col_btn1, col_btn2, col_btn3 = st.columns(3)
+        with col_btn1:
+            if st.button("✅ Έγκριση Αποτελέσματος", use_container_width=True, type="primary", key=f"approve_{selected_res_id}"):
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "UPDATE CM_TestResults "
+                                "SET ReviewStatus = 'Approved', ReviewerNotes = :notes, "
+                                "    ReviewedBy = :reviewer, ReviewedAt = :now, "
+                                "    CompanyCandidateID = :cand_id, CompanyPartnerID = :part_id "
+                                "WHERE ResultID = :id"
+                            ),
+                            {
+                                "notes": single_notes if single_notes else None,
+                                "reviewer": st.session_state.username,
+                                "now": datetime.now(),
+                                "cand_id": company_cand_id if company_cand_id else None,
+                                "part_id": company_part_id if company_part_id else None,
+                                "id": selected_res_id
+                            }
+                        )
+                    st.success("✅ Το αποτέλεσμα εγκρίθηκε με επιτυχία.")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Σφάλμα: {e}")
+        with col_btn2:
+            if st.button("❌ Απόρριψη / Ακύρωση", use_container_width=True, key=f"reject_{selected_res_id}"):
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "UPDATE CM_TestResults "
+                                "SET ReviewStatus = 'Rejected', ReviewerNotes = :notes, "
+                                "    ReviewedBy = :reviewer, ReviewedAt = :now, "
+                                "    CompanyCandidateID = :cand_id, CompanyPartnerID = :part_id "
+                                "WHERE ResultID = :id"
+                            ),
+                            {
+                                "notes": single_notes if single_notes else None,
+                                "reviewer": st.session_state.username,
+                                "now": datetime.now(),
+                                "cand_id": company_cand_id if company_cand_id else None,
+                                "part_id": company_part_id if company_part_id else None,
+                                "id": selected_res_id
+                            }
+                        )
+                    st.warning("❌ Το τεστ απορρίφθηκε / ακυρώθηκε.")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Σφάλμα: {e}")
+        with col_btn3:
+            if st.button("🔄 Επαναφορά σε Εκκρεμότητα", use_container_width=True, key=f"reset_{selected_res_id}"):
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "UPDATE CM_TestResults "
+                                "SET ReviewStatus = 'Pending', ReviewerNotes = :notes, "
+                                "    ReviewedBy = :reviewer, ReviewedAt = :now, "
+                                "    CompanyCandidateID = :cand_id, CompanyPartnerID = :part_id "
+                                "WHERE ResultID = :id"
+                            ),
+                            {
+                                "notes": single_notes if single_notes else None,
+                                "reviewer": st.session_state.username,
+                                "now": datetime.now(),
+                                "cand_id": company_cand_id if company_cand_id else None,
+                                "part_id": company_part_id if company_part_id else None,
+                                "id": selected_res_id
+                            }
+                        )
+                    st.info("🔄 Η κατάσταση επαναφέρθηκε σε Pending.")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Σφάλμα: {e}")
+
+def render_classmarker_content():
+    st.subheader("🎓 Πιστοποιήσεις ClassMarker", divider="blue")
+    
+    role = st.session_state.user_role
+    can_manage = role in ["Administrator", "ContentManager"]
+    can_edit = role in ["Administrator", "ContentManager", "ContentCreator"]
+    
+    tab_titles = []
+    tab_callbacks = []
+    
+    # Tab 1: Questions Management (Admins, ContentManagers, ContentCreators)
+    if can_edit:
+        tab_titles.append("📝 Διαχείριση Ερωτήσεων")
+        tab_callbacks.append(lambda: show_classmarker_questions(can_edit, can_manage))
+        
+    # Tab 2: Test Results & Proctoring (Admins, ContentManagers)
+    if can_manage:
+        tab_titles.append("🛡️ Αποτελέσματα & Proctoring")
+        tab_callbacks.append(lambda: show_classmarker_results(can_manage))
+        
+    # Tab 3: Review / Approval Queue (All logged-in roles)
+    tab_titles.append("📥 Εκκρεμότητες Ελέγχου")
+    tab_callbacks.append(lambda: show_reviewer_queue(st.session_state.user_id))
+    
+    if tab_titles:
+        tabs = st.tabs(tab_titles)
+        for idx, tab in enumerate(tabs):
+            with tab:
+                tab_callbacks[idx]()
+    else:
+        st.warning("⚠️ Δεν έχετε δικαιώματα πρόσβασης στις λειτουργίες ClassMarker.")
+
 # --- Render Layout based on Sidebar Selection ---
 if "selected_page" in st.session_state:
     selected_page = st.session_state.selected_page
@@ -3870,6 +4824,8 @@ elif selected_page == "⏱️ Χρόνοι Απόκρισης":
     render_response_times_content()
 elif selected_page == "🚀 ETL Manager":
     render_etl_manager_content()
+elif selected_page == "🎓 ClassMarker":
+    render_classmarker_content()
 elif selected_page == "📖 Οδηγίες Χρήσης":
     render_manual_content()
 

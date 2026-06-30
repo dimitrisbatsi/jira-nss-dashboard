@@ -105,12 +105,106 @@ try:
         except Exception as e:
             print(f"  -> Warning creating User_Sessions table: {e}")
 
+        # Create ClassMarker CM_Categories table if not exists
+        try:
+            conn.execute(text("""
+                IF OBJECT_ID('CM_Categories', 'U') IS NULL
+                BEGIN
+                    CREATE TABLE CM_Categories (
+                        CategoryID INT PRIMARY KEY,
+                        CategoryName NVARCHAR(255) NOT NULL,
+                        ParentCategoryID INT NULL,
+                        SyncedAt DATETIME DEFAULT GETDATE(),
+                        CONSTRAINT FK_CM_Categories_Parent FOREIGN KEY (ParentCategoryID) REFERENCES CM_Categories(CategoryID)
+                    );
+                END
+            """))
+            print("  -> Table 'CM_Categories' created or verified.")
+        except Exception as e:
+            print(f"  -> Warning creating CM_Categories table: {e}")
+
+        # Create ClassMarker CM_Questions table if not exists
+        try:
+            conn.execute(text("""
+                IF OBJECT_ID('CM_Questions', 'U') IS NULL
+                BEGIN
+                    CREATE TABLE CM_Questions (
+                        QuestionID INT PRIMARY KEY,
+                        CategoryID INT NOT NULL,
+                        QuestionType NVARCHAR(50) NOT NULL,
+                        QuestionText NVARCHAR(MAX) NOT NULL,
+                        OptionsJSON NVARCHAR(MAX) NULL,
+                        Points DECIMAL(5,2) DEFAULT 1.0,
+                        Active BIT DEFAULT 1,
+                        UpdatedAt DATETIME NOT NULL,
+                        SyncedAt DATETIME DEFAULT GETDATE(),
+                        CONSTRAINT FK_CM_Questions_Category FOREIGN KEY (CategoryID) REFERENCES CM_Categories(CategoryID)
+                    );
+                END
+            """))
+            # Run column modifications if columns don't exist
+            conn.execute(text("""
+                IF COL_LENGTH('CM_Questions', 'ReviewStage') IS NULL
+                    ALTER TABLE CM_Questions ADD ReviewStage INT DEFAULT 1;
+                IF COL_LENGTH('CM_Questions', 'AssignedToUserID') IS NULL
+                    ALTER TABLE CM_Questions ADD AssignedToUserID INT NULL CONSTRAINT FK_CM_Questions_AssignedTo FOREIGN KEY (AssignedToUserID) REFERENCES Users(UserID);
+                IF COL_LENGTH('CM_Questions', 'AssignedByUserID') IS NULL
+                    ALTER TABLE CM_Questions ADD AssignedByUserID INT NULL CONSTRAINT FK_CM_Questions_AssignedBy FOREIGN KEY (AssignedByUserID) REFERENCES Users(UserID);
+                IF COL_LENGTH('CM_Questions', 'ReviewNotes') IS NULL
+                    ALTER TABLE CM_Questions ADD ReviewNotes NVARCHAR(MAX) NULL;
+                IF COL_LENGTH('CM_Questions', 'PreviousAssigneeID') IS NULL
+                    ALTER TABLE CM_Questions ADD PreviousAssigneeID INT NULL CONSTRAINT FK_CM_Questions_Prev FOREIGN KEY (PreviousAssigneeID) REFERENCES Users(UserID);
+                IF COL_LENGTH('CM_Questions', 'IsLocallyModified') IS NULL
+                    ALTER TABLE CM_Questions ADD IsLocallyModified BIT DEFAULT 0;
+            """))
+            print("  -> Table 'CM_Questions' created or verified with review columns.")
+        except Exception as e:
+            print(f"  -> Warning creating/altering CM_Questions table: {e}")
+
+        # Create ClassMarker CM_TestResults table if not exists
+        try:
+            conn.execute(text("""
+                IF OBJECT_ID('CM_TestResults', 'U') IS NULL
+                BEGIN
+                    CREATE TABLE CM_TestResults (
+                        ResultID BIGINT PRIMARY KEY,
+                        TestID INT NOT NULL,
+                        TestName NVARCHAR(255) NOT NULL,
+                        UserID NVARCHAR(100) NOT NULL,
+                        CandidateName NVARCHAR(255) NOT NULL,
+                        CandidateEmail NVARCHAR(255) NOT NULL,
+                        Score DECIMAL(5,2) NOT NULL,
+                        Percentage DECIMAL(5,2) NOT NULL,
+                        DurationSeconds INT NOT NULL,
+                        FinishedAt DATETIME NOT NULL,
+                        ProctoringFlag BIT DEFAULT 0,
+                        ProctoringEventsCount INT DEFAULT 0,
+                        ProctoringEventsJSON NVARCHAR(MAX) NULL,
+                        ReviewStatus NVARCHAR(50) DEFAULT 'Pending',
+                        ReviewerNotes NVARCHAR(MAX) NULL,
+                        ReviewedBy NVARCHAR(100) NULL,
+                        ReviewedAt DATETIME NULL,
+                        CompanyCandidateID NVARCHAR(100) NULL,
+                        CompanyPartnerID NVARCHAR(100) NULL,
+                        SyncedAt DATETIME DEFAULT GETDATE()
+                    );
+                    CREATE INDEX IX_CM_TestResults_ReviewStatus ON CM_TestResults(ReviewStatus);
+                    CREATE INDEX IX_CM_TestResults_ProctoringFlag ON CM_TestResults(ProctoringFlag);
+                    CREATE INDEX IX_CM_TestResults_ProctoringCount ON CM_TestResults(ProctoringEventsCount);
+                END
+            """))
+            print("  -> Table 'CM_TestResults' created or verified.")
+        except Exception as e:
+            print(f"  -> Warning creating CM_TestResults table: {e}")
+
         # Seed User Roles
         print("🛠️ Seeding User_Roles...")
         roles = [
             (1, "Administrator"),
             (2, "Team Leader"),
-            (3, "Consultant")
+            (3, "Consultant"),
+            (4, "ContentCreator"),
+            (5, "ContentManager")
         ]
         for role_id, role_name in roles:
             # Check if role exists

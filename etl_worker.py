@@ -195,6 +195,16 @@ def main():
                     f"success = run_jira_date_range_sync('{start_date}', '{end_date}', '{date_type}'); "
                     "import sys; sys.exit(0 if success else 1)"
                 )
+            elif job_type == 'CLASSMARKER_QUESTIONS_SYNC':
+                statement = (
+                    "from modules.classmarker_questions_etl import main as run_questions_sync; "
+                    "run_questions_sync()"
+                )
+            elif job_type == 'CLASSMARKER_RESULTS_SYNC':
+                statement = (
+                    "from modules.classmarker_results_etl import main as run_results_sync; "
+                    "run_results_sync()"
+                )
             else:
                 # Unknown job type
                 print(f"[JOB #{job_id}] Unknown job type: {job_type}. Failing job.")

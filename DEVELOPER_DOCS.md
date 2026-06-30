@@ -1,4 +1,4 @@
-# Developer Documentation - NSS Timesheet App v26.5.6a
+# Developer Documentation - NSS Timesheet App v26.6.1a
 
 Αυτό το έγγραφο περιέχει τις τεχνικές λεπτομέρειες, την αρχιτεκτονική και την τεκμηρίωση των μεθόδων της εφαρμογής **NSS Timesheet Dashboard**. Είναι σχεδιασμένο για developers που θέλουν να συντηρήσουν, να επεκτείνουν ή να αποσφαλματώσουν την εφαρμογή.
 
@@ -62,7 +62,15 @@ graph TD
 * **`GTimeTracking`**: Καταγραφές χρόνων (Gemini Time Trackings).
   * *Στήλες*: `TimeEntryID` (PK), `SourceApp` (PK), `IssueID`, `ProjectID`, `TimeEntryDate`, `TimeCreationDate`, `TimeResourceID`, `TimeHours`, `TimeMinutes`, `TimeComment`, `TimeTypeID`, `TimeTypeName`, `IssueComponent`.
 
-### β. Πίνακες Μεταδεδομένων & Logs ETL
+### β. Πίνακες ClassMarker (Ingestion & Proctoring)
+* **`CM_Categories`**: Αποθηκεύει τις ιεραρχικές κατηγορίες ερωτήσεων του ClassMarker.
+  * *Στήλες*: `CategoryID` (PK), `CategoryName`, `ParentCategoryID` (FK -> `CM_Categories.CategoryID`), `SyncedAt`.
+* **`CM_Questions`**: Αποθηκεύει τις ερωτήσεις, τις επιλογές απαντήσεων και τα μεταδεδομένα του workflow ελέγχου.
+  * *Στήλες*: `QuestionID` (PK), `CategoryID` (FK -> `CM_Categories.CategoryID`), `QuestionType`, `QuestionText`, `OptionsJSON` (JSON array), `Points`, `Active`, `UpdatedAt`, `SyncedAt`, `ReviewStage` (INT, default 1 - Draft), `AssignedToUserID` (FK -> Users.UserID), `AssignedByUserID` (FK -> Users.UserID), `ReviewNotes` (NVARCHAR(MAX)), `PreviousAssigneeID` (FK -> Users.UserID), `IsLocallyModified` (BIT, default 0).
+* **`CM_TestResults`**: Αποθηκεύει τα αποτελέσματα των εξετάσεων και τα συμβάντα Proctoring επιτήρησης.
+  * *Στήλες*: `ResultID` (PK), `TestID`, `TestName`, `UserID`, `CandidateName`, `CandidateEmail`, `Score`, `Percentage`, `DurationSeconds`, `FinishedAt`, `ProctoringFlag`, `ProctoringEventsCount`, `ProctoringEventsJSON` (infraction events timeline), `ReviewStatus` ('Pending'/'Approved'/'Rejected'), `ReviewerNotes`, `ReviewedBy`, `ReviewedAt`, `CompanyCandidateID`, `CompanyPartnerID`, `SyncedAt`.
+
+### γ. Πίνακες Μεταδεδομένων & Logs ETL
 * **`ETL_Queue`**: Ουρά διεργασιών ETL για ασύγχρονη (asynchronous) εκτέλεση στο παρασκήνιο.
   * *Στήλες*: `JobID` (PK - IDENTITY), `JobType` (VARCHAR(50)), `IssueKey` (VARCHAR(50), NULL), `StartDate` (VARCHAR(50), NULL), `EndDate` (VARCHAR(50), NULL), `DateFilterType` (VARCHAR(20), NULL), `Status` (VARCHAR(20) - 'Pending'/'Running'/'Success'/'Failed'), `CreatedBy` (VARCHAR(100)), `CreatedAt` (DATETIME, default GETDATE()), `StartedAt` (DATETIME, NULL), `FinishedAt` (DATETIME, NULL), `LogFilePath` (NVARCHAR(255), NULL).
 * **`SyncMetadata`**: Καταγράφει την ημερομηνία τελευταίας εκτέλεσης του ETL ανά οντότητα.
@@ -89,6 +97,7 @@ graph TD
   * `ContentHub.TargetApps`
   * `KBArticles.TargetApps`
   * `Users.AppPreferences`
+  * `CM_Questions` (ReviewStage, AssignedToUserID, AssignedByUserID, ReviewNotes, PreviousAssigneeID, IsLocallyModified)
 
 ### 4.3. Διαχείριση Χρηστών & Sessions
 * **`hash_password(password)`**: Δημιουργεί SHA256 Hash ενός κωδικού.
@@ -100,6 +109,7 @@ graph TD
 * **`register_new_user(username, password, email, role, display_name)`**: Εισάγει νέο χρήστη στη βάση.
 * **`load_all_users_admin()`**: Επιστρέφει όλους τους χρήστες (για το panel διαχείρισης).
 * **`admin_update_user_status(user_id, is_active)`**: Ενεργοποιεί/Απενεργοποιεί έναν λογαριασμό.
+* **`admin_update_user_role(user_id, role_id)`**: Ενημερώνει τον ρόλο ενός χρήστη.
 * **`admin_reset_user_password(user_id, default_pwd)`**: Επαναφέρει τον κωδικό χρήστη στον default.
 
 ### 4.4. Διαχείριση Presets (Saved Previews)
@@ -138,6 +148,15 @@ graph TD
 * **`render_management_content()`**: Διαχειριστικό panel χρηστών και ομάδων.
 * **`render_response_times_content()`**: Dashboard χρόνων απόκρισης (KPIs / SLAs).
 * **`render_etl_manager_content()`**: Σελίδα ελέγχου και εκτέλεσης των ETL διεργασιών.
+* **`render_classmarker_content()`**: Κεντρικό layout της σελίδας ClassMarker (Tabed UI με ερωτήσεις, αποτελέσματα, και εκκρεμότητες ελέγχου).
+* **`show_classmarker_questions(can_edit, can_manage)`**: Εμφανίζει την τράπεζα ερωτήσεων, λεπτομέρειες, κουμπί ETL sync, και κουμπί επεξεργασίας σε αναδυόμενο παράθυρο (modal dialog) ή φόρμα ανάθεσης ελέγχου.
+* **`edit_question_dialog(q_row, categories_df, users_map, can_manage)`**: Αναδυόμενο παράθυρο (`st.dialog`) για την επεξεργασία της ερώτησης και των επιλογών της (δυναμική εμφάνιση/επεξεργασία επιλογών βάσει του τύπου ερώτησης).
+* **`show_reviewer_queue(current_user_id)`**: Εμφανίζει τις ερωτήσεις που έχουν ανατεθεί στον τρέχοντα χρήστη για αξιολόγηση (Στάδιο 1, 2 ή 3) με δυνατότητα επιστροφής ή προώθησης.
+* **`update_local_question(...)`**: Ενημερώνει τοπικά την ερώτηση στη βάση δεδομένων και τη σημαδεύει ως τροποποιημένη (`IsLocallyModified = 1`).
+* **`assign_question_reviewer(...)`**: Αναθέτει την ερώτηση σε reviewer για συγκεκριμένο στάδιο ελέγχου.
+* **`push_question_to_classmarker(question_id)`**: Συγχρονίζει την τοπικά εγκεκριμένη ερώτηση πίσω στο ClassMarker API και επαναφέρει τη σήμανση τοπικής αλλαγής.
+* **`show_classmarker_results(can_manage)`**: Εμφανίζει τα αποτελέσματα, τις λεπτομέρειες proctoring (timeline από `ProctoringEventsJSON`), τα πεδία internal IDs, τις επιλογές αξιολόγησης και το mass actions form.
+* **`queue_classmarker_job(job_type, username)`**: Εισάγει ένα νέο pending sync job στην `ETL_Queue`.
 * **`render_manual_content()`**: Σελίδα του Οδηγού Χρήσης (Manual).
 
 ### 4.9. Φόρτωση & Υπολογισμός Χρόνων Απόκρισης (KPIs / SLA)
