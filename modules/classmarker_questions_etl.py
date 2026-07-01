@@ -173,24 +173,15 @@ def main():
             cat_url = f"https://api.classmarker.com/v1/categories.json?api_key={api_key}&signature={signature}&timestamp={timestamp}"
             cat_res = requests.get(cat_url, timeout=15)
             
-            # Questions endpoint
-            q_url = f"https://api.classmarker.com/v1/questions.json?api_key={api_key}&signature={signature}&timestamp={timestamp}"
-            q_res = requests.get(q_url, timeout=15)
-            
-            if cat_res.status_code == 200 and q_res.status_code == 200:
+            # Questions endpoint (fetched paginated)
+            if cat_res.status_code == 200:
                 cat_data = cat_res.json()
-                q_data = q_res.json()
-                
                 print(f"[DEBUG] Categories API raw response: {cat_data}")
                 
                 # Check for ClassMarker internal errors (returned with HTTP 200)
                 if cat_data.get("status") == "error":
                     err = cat_data.get("error", {})
                     print(f"[ERROR] Categories API error: {err.get('error_code')} - {err.get('error_message')}")
-                    sys.exit(1)
-                if q_data.get("status") == "error":
-                    err = q_data.get("error", {})
-                    print(f"[ERROR] Questions API error: {err.get('error_code')} - {err.get('error_message')}")
                     sys.exit(1)
                 
                 categories = []
@@ -216,21 +207,80 @@ def main():
                             })
                     
                 questions = []
-                for q in q_data.get("questions", []):
-                    q_id = q.get("question_id") if q.get("question_id") is not None else q.get("id")
-                    q_cat_id = q.get("category_id")
-                    questions.append({
-                        "QuestionID": q_id,
-                        "CategoryID": q_cat_id,
-                        "QuestionType": q.get("question_type") or q.get("type"),
-                        "QuestionText": q.get("question") or q.get("text"),
-                        "OptionsJSON": json.dumps(q.get("options", []), ensure_ascii=False),
-                        "Points": float(q.get("points", 1.0)),
-                        "Active": 1 if q.get("status") == "active" else 0,
-                        "UpdatedAt": datetime.fromtimestamp(q.get("updated", time.time()))
-                    })
+                page = 1
+                while True:
+                    q_url = f"https://api.classmarker.com/v1/questions.json?api_key={api_key}&signature={signature}&timestamp={timestamp}&page={page}"
+                    print(f"[*] Fetching questions page {page}...")
+                    q_res = requests.get(q_url, timeout=15)
+                    if q_res.status_code != 200:
+                        print(f"[ERROR] Questions API HTTP error on page {page}: {q_res.status_code}")
+                        sys.exit(1)
+                        
+                    q_data = q_res.json()
+                    if q_data.get("status") == "error":
+                        err = q_data.get("error", {})
+                        print(f"[ERROR] Questions API error on page {page}: {err.get('error_code')} - {err.get('error_message')}")
+                        sys.exit(1)
+                        
+                    page_questions = q_data.get("questions", [])
+                    if not page_questions:
+                        break
+                        
+                    # Print raw structure of a question with options for diagnostics
+                    for q_test in page_questions:
+                        if q_test.get("options") is not None:
+                            print(f"[DEBUG] Raw question with options structure: {q_test}")
+                            break
+                        
+                    for q in page_questions:
+                        q_id = q.get("question_id") if q.get("question_id") is not None else q.get("id")
+                        q_cat_id = q.get("category_id")
+                        
+                        # Format options list combining options dict and correct_options list
+                        opts_dict = q.get("options")
+                        correct_list = q.get("correct_options") or []
+                        if not isinstance(correct_list, list):
+                            if correct_list:
+                                correct_list = [correct_list]
+                            else:
+                                correct_list = []
+                                
+                        formatted_options = []
+                        if isinstance(opts_dict, dict):
+                            for key in sorted(opts_dict.keys()):
+                                val = opts_dict[key]
+                                content = val.get("content") or ""
+                                is_correct = key in correct_list
+                                formatted_options.append({
+                                    "text": content,
+                                    "correct": is_correct,
+                                    "option_label": key
+                                })
+                        elif isinstance(opts_dict, list):
+                            for o_idx, o in enumerate(opts_dict):
+                                is_correct = o.get("correct", False)
+                                content = o.get("text") or ""
+                                formatted_options.append({
+                                    "text": content,
+                                    "correct": is_correct
+                                })
+                                
+                        questions.append({
+                            "QuestionID": q_id,
+                            "CategoryID": q_cat_id,
+                            "QuestionType": q.get("question_type") or q.get("type"),
+                            "QuestionText": q.get("question") or q.get("text"),
+                            "OptionsJSON": json.dumps(formatted_options, ensure_ascii=False),
+                            "Points": float(q.get("points", 1.0)),
+                            "Active": 1 if q.get("status") == "active" else 0,
+                            "UpdatedAt": datetime.fromtimestamp(q.get("updated", time.time()))
+                        })
+                        
+                    if len(page_questions) < 200:
+                        break
+                    page += 1
             else:
-                print(f"[ERROR] HTTP status error: categories={cat_res.status_code}, questions={q_res.status_code}")
+                print(f"[ERROR] HTTP status error: categories={cat_res.status_code}")
                 sys.exit(1)
         except Exception as e:
             print(f"[ERROR] ClassMarker API call failed: {e}")

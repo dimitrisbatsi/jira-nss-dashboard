@@ -8,6 +8,7 @@ import re
 import hashlib
 import pyodbc
 import time
+import json
 from datetime import datetime
 from sqlalchemy import text
 import time
@@ -18,7 +19,7 @@ from modules.test_users_etl import run_users_etl, run_jira_users_etl
 from modules.test_components_etl import run_components_etl, run_jira_components_etl
 from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl
 
-APP_VERSION = "26.6.2a (2026-06-30)"
+APP_VERSION = "26.6.2b (2026-07-01)"
 
 # --- Helper functions for state updates ---
 def on_only_me_click(username):
@@ -4087,31 +4088,34 @@ def push_question_to_classmarker(question_id):
         signature = hashlib.sha256((api_key + api_secret + timestamp).encode('utf-8')).hexdigest()
         
         # Real API request
-        url = f"https://api.classmarker.com/v1/questions.json?api_key={api_key}&signature={signature}&timestamp={timestamp}"
+        # Real API request using PUT for updates
+        url = f"https://api.classmarker.com/v1/questions/{question_id}.json?api_key={api_key}&signature={signature}&timestamp={timestamp}"
         
-        opts = []
+        opts_dict = {}
+        correct_list = []
         try:
             raw_opts = json.loads(options_json)
-            for o in raw_opts:
-                opts.append({
-                    "text": o.get("text", ""),
-                    "correct": 1 if o.get("correct", False) else 0
-                })
+            alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            for o_idx, o in enumerate(raw_opts):
+                label = o.get("option_label") or alphabet[o_idx]
+                opts_dict[label] = {"content": o.get("text", "")}
+                if o.get("correct", False):
+                    correct_list.append(label)
         except Exception:
-            opts = []
+            opts_dict = {}
+            correct_list = []
             
         payload = {
-            "question_id": question_id,
-            "category_id": category_id,
-            "text": q_text,
-            "points": float(points),
-            "status": "active" if active else "inactive"
+            "question": q_text,
+            "category_id": int(category_id),
+            "points": float(points)
         }
         
         if q_type in ["multiple_choice", "true_false", "multiplechoice", "truefalse", "multipleresponse"]:
-            payload["options"] = opts
+            payload["options"] = opts_dict
+            payload["correct_options"] = correct_list
             
-        res = requests.post(url, json=payload, timeout=15)
+        res = requests.put(url, json=payload, timeout=15)
         if res.status_code in [200, 201]:
             with engine.begin() as conn:
                 conn.execute(
@@ -4206,13 +4210,24 @@ def show_reviewer_queue(current_user_id):
             options = json.loads(q_row["OptionsJSON"])
             if options:
                 st.markdown("**Επιλογές Απαντήσεων (Read-Only):**")
-                for idx, opt in enumerate(options, 1):
+                normalized_options = []
+                if isinstance(options, dict):
+                    for key in sorted(options.keys()):
+                        opt = options[key]
+                        content = opt.get("content") or opt.get("text") or ""
+                        correct = opt.get("correct") or False
+                        normalized_options.append({"text": content, "correct": correct, "option_label": key})
+                elif isinstance(options, list):
+                    normalized_options = options
+                
+                for idx, opt in enumerate(normalized_options, 1):
                     is_correct = opt.get("correct", False)
                     opt_text = opt.get("text", "")
+                    label = opt.get("option_label") or str(idx)
                     if is_correct:
-                        st.markdown(f"✅ {idx}. **{opt_text} (Σωστό)**")
+                        st.markdown(f"✅ **{label}**. **{opt_text} (Σωστό)**")
                     else:
-                        st.markdown(f"❌ {idx}. {opt_text}")
+                        st.markdown(f"❌ **{label}**. {opt_text}")
         except Exception:
             pass
             
@@ -4349,14 +4364,26 @@ def edit_question_dialog(q_row, categories_df, users_map, can_manage):
     if q_type in ["multiple_choice", "true_false", "multiplechoice", "truefalse", "multipleresponse"]:
         st.write("---")
         st.markdown("**👉 Επιλογές Απαντήσεων:**")
-        if options:
-            for o_idx, opt in enumerate(options):
+        
+        normalized_options = []
+        if isinstance(options, dict):
+            for key in sorted(options.keys()):
+                opt = options[key]
+                content = opt.get("content") or opt.get("text") or ""
+                correct = opt.get("correct") or False
+                normalized_options.append({"text": content, "correct": correct, "option_label": key})
+        elif isinstance(options, list):
+            normalized_options = options
+            
+        if normalized_options:
+            for o_idx, opt in enumerate(normalized_options):
                 col_o1, col_o2 = st.columns([4, 1])
+                label = opt.get("option_label") or str(o_idx + 1)
                 with col_o1:
-                    opt_t = st.text_input(f"Επιλογή {o_idx + 1}", value=opt.get("text", ""), key=f"dialog_opt_t_{question_id}_{o_idx}")
+                    opt_t = st.text_input(f"Επιλογή {label}", value=opt.get("text", ""), key=f"dialog_opt_t_{question_id}_{o_idx}")
                 with col_o2:
                     opt_c = st.checkbox("Σωστή", value=opt.get("correct", False), key=f"dialog_opt_c_{question_id}_{o_idx}")
-                edited_options.append({"text": opt_t, "correct": opt_c})
+                edited_options.append({"text": opt_t, "correct": opt_c, "option_label": label})
         else:
             st.caption("Δεν βρέθηκαν προκαθορισμένες επιλογές.")
             
@@ -4489,15 +4516,26 @@ def show_classmarker_questions(can_edit, can_manage):
             options = json.loads(q_row["OptionsJSON"])
             if options:
                 st.markdown("**Επιλογές Απαντήσεων:**")
-                for idx, opt in enumerate(options, 1):
+                normalized_options = []
+                if isinstance(options, dict):
+                    for key in sorted(options.keys()):
+                        opt = options[key]
+                        content = opt.get("content") or opt.get("text") or ""
+                        correct = opt.get("correct") or False
+                        normalized_options.append({"text": content, "correct": correct, "option_label": key})
+                elif isinstance(options, list):
+                    normalized_options = options
+                
+                for idx, opt in enumerate(normalized_options, 1):
                     is_correct = opt.get("correct", False)
                     opt_text = opt.get("text", "")
+                    label = opt.get("option_label") or str(idx)
                     if is_correct:
-                        st.markdown(f"✅ {idx}. **{opt_text} (Σωστό)**")
+                        st.markdown(f"✅ **{label}**. **{opt_text} (Σωστό)**")
                     else:
-                        st.markdown(f"❌ {idx}. {opt_text}")
-        except Exception:
-            st.caption("Δεν υπάρχουν δομημένες επιλογές (π.χ. ερώτηση ελεύθερου κειμένου ή σφάλμα JSON).")
+                        st.markdown(f"❌ **{label}**. {opt_text}")
+        except Exception as e:
+            st.caption(f"Δεν υπάρχουν δομημένες επιλογές (Σφάλμα: {e}).")
 
                 # Edit Section (visible to Admin, ContentManager, ContentCreator)
         if can_edit:
