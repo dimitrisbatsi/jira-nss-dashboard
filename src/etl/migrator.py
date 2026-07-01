@@ -709,7 +709,30 @@ def render_migration_tab():
     from datetime import datetime, time as dt_time
     
     st.subheader("🔄 Countersoft Gemini ➔ Jira Migration Tool")
-    st.markdown("Μεταφορά θε�        single_id = ""
+    st.markdown("Μεταφορά θεμάτων από το Gemini στο Jira Cloud (`PYLMIG`) με βάση τις καθορισμένες στρατηγικές και mappings.")
+    
+    # Recreate clients on every render to prevent Streamlit hot-reload cache issue
+    st.session_state.gemini_client = GeminiAPIClient()
+    st.session_state.jira_client = JiraAPIClient()
+    if "lookup_cache" not in st.session_state or not hasattr(st.session_state.lookup_cache, "user_id_to_email"):
+        with st.spinner("Φόρτωση custom field definitions από το Gemini..."):
+            cache = GeminiLookupCache(st.session_state.gemini_client)
+            cache.preload()
+            st.session_state.lookup_cache = cache
+        
+    gemini_client = st.session_state.gemini_client
+    jira_client = st.session_state.jira_client
+    lookup_cache = st.session_state.lookup_cache
+    
+    # Left and Right layouts
+    col_filters, col_actions = st.columns([1, 1])
+    
+    with col_filters:
+        st.markdown("### 🔍 Φίλτρα & Παράμετροι")
+        
+        migration_mode = st.radio("Τρόπος Μεταφοράς:", ["Μεμονωμένο Issue ID (Single)", "Μαζική Μεταφορά βάσει Φίλτρων (Batch)"])
+        
+        single_id = ""
         selected_project_id = None
         batch_project = "SRV"
         batch_search = ""
@@ -718,8 +741,15 @@ def render_migration_tab():
         
         # Advanced filters variables init
         filter_statuses = ""
+        filter_statuses_not = False
         filter_types = ""
+        filter_types_not = False
         filter_resources = ""
+        filter_resources_not = False
+        filter_components = ""
+        filter_components_not = False
+        filter_versions = ""
+        filter_versions_not = False
         filter_max_items = 1000
         
         if migration_mode == "Μεμονωμένο Issue ID (Single)":
@@ -730,9 +760,10 @@ def render_migration_tab():
             try:
                 projects = gemini_client.get_projects()
                 for p in projects:
-                    code = p.get("Code") or ""
-                    name = p.get("Name") or ""
-                    p_id = p.get("Id")
+                    entity = p.get("BaseEntity", p.get("Entity", {}))
+                    code = entity.get("Code") or ""
+                    name = entity.get("Name") or ""
+                    p_id = entity.get("Id") or p.get("Id")
                     if code and p_id:
                         label = f"{code} - {name}" if name else code
                         project_mapping[label] = (p_id, code)
@@ -766,9 +797,31 @@ def render_migration_tab():
                 
             # Advanced filters collapsible expander
             with st.expander("🛠️ Προηγμένα Φίλτρα (Advanced Filters)"):
-                filter_statuses = st.text_input("Καταστάσεις (Statuses - διαχωρισμός με κόμμα):", value="", help="π.χ. Open, In Progress, Closed")
-                filter_types = st.text_input("Τύποι (Types - διαχωρισμός με κόμμα):", value="", help="π.χ. Bug, Enhancement, Task")
-                filter_resources = st.text_input("Πόροι / Αναθέσεις (Resources - ονόματα με κόμμα):", value="", help="π.χ. Δημήτρης Μπατσίλης")
+                col_st, col_st_not = st.columns([3, 1])
+                filter_statuses = col_st.text_input("Statuses (Καταστάσεις με κόμμα):", value="", help="π.χ. Open, In Progress, Closed")
+                st.write("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+                filter_statuses_not = col_st_not.checkbox("NOT Statuses", value=False)
+                
+                col_tp, col_tp_not = st.columns([3, 1])
+                filter_types = col_tp.text_input("Types (Τύποι με κόμμα):", value="", help="π.χ. Bug, Enhancement, Task")
+                st.write("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+                filter_types_not = col_tp_not.checkbox("NOT Types", value=False)
+                
+                col_res, col_res_not = st.columns([3, 1])
+                filter_resources = col_res.text_input("Resources (Αναθέσεις με κόμμα):", value="", help="π.χ. Δημήτρης Μπατσίλης")
+                st.write("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+                filter_resources_not = col_res_not.checkbox("NOT Resources", value=False)
+                
+                col_comp, col_comp_not = st.columns([3, 1])
+                filter_components = col_comp.text_input("Components (Εξαρτήματα με κόμμα):", value="", help="π.χ. UI, Core")
+                st.write("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+                filter_components_not = col_comp_not.checkbox("NOT Components", value=False)
+                
+                col_ver, col_ver_not = st.columns([3, 1])
+                filter_versions = col_ver.text_input("Versions (Εκδόσεις με κόμμα):", value="", help="π.χ. 1.0, 2.0")
+                st.write("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+                filter_versions_not = col_ver_not.checkbox("NOT Versions", value=False)
+                
                 filter_max_items = st.number_input("Μέγιστο πλήθος (Max Items):", min_value=10, max_value=5000, value=1000, step=50)
                 
         # Locked target Jira project
@@ -797,7 +850,11 @@ def render_migration_tab():
                         # If selected_project_id is None, try to find it
                         if not selected_project_id:
                             projects = gemini_client.get_projects()
-                            selected_project_id = next((p.get("Id") for p in projects if p.get("Code", "").upper() == batch_project.upper()), None)
+                            for p in projects:
+                                entity = p.get("BaseEntity", p.get("Entity", {}))
+                                if entity.get("Code", "").upper() == batch_project.upper():
+                                    selected_project_id = entity.get("Id") or p.get("Id")
+                                    break
                     except Exception as e:
                         selected_project_id = None
                         st.error(f"Error fetching projects: {e}")
@@ -828,13 +885,19 @@ def render_migration_tab():
                             if filter_statuses:
                                 target_statuses = [s.strip().lower() for s in filter_statuses.split(",") if s.strip()]
                                 if target_statuses:
-                                    raw_issues = [x for x in raw_issues if (x.get("Status") or "").lower() in target_statuses]
+                                    if filter_statuses_not:
+                                        raw_issues = [x for x in raw_issues if (x.get("Status") or "").lower() not in target_statuses]
+                                    else:
+                                        raw_issues = [x for x in raw_issues if (x.get("Status") or "").lower() in target_statuses]
                                     
                             # Filter by advanced types
                             if filter_types:
                                 target_types = [t.strip().lower() for t in filter_types.split(",") if t.strip()]
                                 if target_types:
-                                    raw_issues = [x for x in raw_issues if (x.get("Type") or "").lower() in target_types]
+                                    if filter_types_not:
+                                        raw_issues = [x for x in raw_issues if (x.get("Type") or "").lower() not in target_types]
+                                    else:
+                                        raw_issues = [x for x in raw_issues if (x.get("Type") or "").lower() in target_types]
                                     
                             # Filter by advanced resources
                             if filter_resources:
@@ -843,33 +906,40 @@ def render_migration_tab():
                                     filtered_by_resources = []
                                     for x in raw_issues:
                                         res_names = [r.get("Entity", {}).get("Fullname", "").lower() for r in x.get("Resources", [])]
-                                        if any(any(tr in rn for rn in res_names) for tr in target_resources):
-                                            filtered_by_resources.append(x)
+                                        has_match = any(any(tr in rn for rn in res_names) for tr in target_resources)
+                                        if filter_resources_not:
+                                            if not has_match:
+                                                filtered_by_resources.append(x)
+                                        else:
+                                            if has_match:
+                                                filtered_by_resources.append(x)
                                     raw_issues = filtered_by_resources
                                     
-                            found_issues = raw_issues
-                        except Exception as e:
-                            st.error(f"Error calling get_issues_advanced: {e}")
-                    else:
-                        st.error(f"Το Project Code {batch_project} δεν βρέθηκε στο Gemini.")                 proj_id = next((p.get("Id") for p in projects if p.get("Code", "").upper() == batch_project.upper()), None)
-                    except Exception as e:
-                        proj_id = None
-                        st.error(f"Error fetching projects: {e}")
-                        
-                    if proj_id:
-                        criteria = GeminiSearchCriteria(project_id=str(proj_id))
-                        if start_date:
-                            criteria.created_after = datetime.combine(start_date, datetime.min.time())
-                        try:
-                            raw_issues = gemini_client.get_issues_advanced(criteria)
-                            
-                            # Filter by search term
-                            if batch_search:
-                                raw_issues = [
-                                    i for i in raw_issues 
-                                    if batch_search.lower() in (i.get("Entity", {}).get("Title", "") or "").lower()
-                                    or batch_search.lower() in (i.get("Entity", {}).get("Description", "") or "").lower()
-                                ]
+                            # Filter by advanced components
+                            if filter_components:
+                                target_components = [c.strip().lower() for c in filter_components.split(",") if c.strip()]
+                                if target_components:
+                                    filtered_by_components = []
+                                    for x in raw_issues:
+                                        comp_names = [c.strip().lower() for c in (x.get("ComponentNames") or "").split(",") if c.strip()]
+                                        has_match = any(any(tc in cn for cn in comp_names) for tc in target_components)
+                                        if filter_components_not:
+                                            if not has_match:
+                                                filtered_by_components.append(x)
+                                        else:
+                                            if has_match:
+                                                filtered_by_components.append(x)
+                                    raw_issues = filtered_by_components
+                                    
+                            # Filter by advanced versions
+                            if filter_versions:
+                                target_versions = [v.strip().lower() for v in filter_versions.split(",") if v.strip()]
+                                if target_versions:
+                                    if filter_versions_not:
+                                        raw_issues = [x for x in raw_issues if (x.get("FixedInVersion") or "").lower() not in target_versions]
+                                    else:
+                                        raw_issues = [x for x in raw_issues if (x.get("FixedInVersion") or "").lower() in target_versions]
+                                    
                             found_issues = raw_issues
                         except Exception as e:
                             st.error(f"Error calling get_issues_advanced: {e}")
@@ -958,4 +1028,3 @@ def render_migration_tab():
                     
                 ui_logger(f"\n🏁 Το Migration ολοκληρώθηκε! Επιτυχείς μεταφορές: {success_count}/{len(selected_ids)}.")
                 st.balloons()
-

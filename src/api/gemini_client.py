@@ -4,8 +4,12 @@ from typing import List, Dict, Any, Optional
 from requests.auth import HTTPBasicAuth
 from datetime import datetime, timezone
 from dateutil.relativedelta import relativedelta
+from dotenv import load_dotenv
 
 from dataclasses import dataclass, field
+
+# Φόρτωση του .env αρχείου για τα Gemini credentials
+load_dotenv()
 from typing import List, Dict, Optional
 
 
