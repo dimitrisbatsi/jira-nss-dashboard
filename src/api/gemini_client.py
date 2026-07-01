@@ -229,3 +229,59 @@ class GeminiAPIClient:
         if response.status_code == 200:
             return response.json()
         return None
+
+    def get_issue_links(self, issue_id: int) -> List[Dict[str, Any]]:
+        """Φέρνει τα links ενός issue."""
+        endpoint = f"{self.base_url}/api/items/{issue_id}/links"
+        try:
+            response = requests.get(endpoint, auth=self.auth, headers=self.headers)
+            if response.status_code == 200:
+                return response.json()
+        except Exception as e:
+            print(f"Error fetching links for Gemini issue {issue_id}: {e}")
+        return []
+
+    def get_custom_fields(self) -> List[Dict[str, Any]]:
+        """Φέρνει όλους τους ορισμούς custom fields από το Gemini."""
+        endpoint = f"{self.base_url}/api/customfields"
+        response = requests.get(endpoint, auth=self.auth, headers=self.headers)
+        response.raise_for_status()
+        return response.json()
+
+    def get_custom_field(self, cf_id: int) -> Dict[str, Any]:
+        """Φέρνει τις λεπτομέρειες ενός συγκεκριμένου custom field."""
+        endpoint = f"{self.base_url}/api/customfields/{cf_id}"
+        response = requests.get(endpoint, auth=self.auth, headers=self.headers)
+        response.raise_for_status()
+        return response.json()
+
+    def update_issue_jira_key(self, issue_id: int, project_id: int, custom_field_id: int, jira_key: str) -> bool:
+        """Ενημερώνει το custom field JiraKey του Gemini με το κλειδί του Jira."""
+        endpoint = f"{self.base_url}/api/items/{issue_id}/customfield/data"
+        payload = {
+            "CustomFieldId": custom_field_id,
+            "Data": jira_key,
+            "IssueId": issue_id,
+            "ProjectId": project_id,
+            "UserId": 5031  # static user id used in C#
+        }
+        try:
+            response = requests.put(endpoint, json=payload, auth=self.auth, headers=self.headers)
+            if response.status_code in [200, 201, 204]:
+                return True
+            print(f"Failed to update JiraKey custom field: {response.status_code} - {response.text}")
+        except Exception as e:
+            print(f"Error updating JiraKey in Gemini issue {issue_id}: {e}")
+        return False
+
+    def get_issue_time_entries(self, issue_id: int) -> List[Dict[str, Any]]:
+        """Φέρνει τις καταγραφές χρόνου (time entries) ενός issue."""
+        endpoint = f"{self.base_url}/api/items/{issue_id}/time"
+        try:
+            response = requests.get(endpoint, auth=self.auth, headers=self.headers)
+            if response.status_code == 200:
+                return response.json()
+        except Exception as e:
+            print(f"Error fetching time entries for Gemini issue {issue_id}: {e}")
+        return []
+

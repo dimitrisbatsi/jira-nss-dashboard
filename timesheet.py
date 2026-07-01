@@ -3417,13 +3417,14 @@ def render_etl_manager_content():
     st.markdown("Διαχειριστικό περιβάλλον για τον συγχρονισμό δεδομένων από Gemini και Jira στο SQL Server.")
 
     # Δημιουργία Tabs (Καρτέλες) μέσα στο κυρίως Tab του μενού
-    tab_actions, tab_full_sync, tab_jira_full_sync, tab_debugger, tab_queue_monitor, tab_dev_docs = st.tabs([
+    tab_actions, tab_full_sync, tab_jira_full_sync, tab_debugger, tab_queue_monitor, tab_dev_docs, tab_migration = st.tabs([
         "⚡ Μεμονωμένες Ενέργειες", 
         "📦 Μαζικός Συγχρονισμός", 
         "🎫 Jira Full Sync (Από Μηδέν)",
         "🔍 ETL Debugger & Sync",
         "🖥️ ETL Job Monitor",
-        "📖 Dev Docs"
+        "📖 Dev Docs",
+        "🔄 Gemini ➔ Jira Migration"
     ])
 
     with tab_actions:
@@ -3742,6 +3743,10 @@ def render_etl_manager_content():
             render_markdown_with_mermaid("DEVELOPER_DOCS.md")
         else:
             render_markdown_with_mermaid("sync_db_docs.md")
+
+    with tab_migration:
+        from src.etl.migrator import render_migration_tab
+        render_migration_tab()
 
 
 

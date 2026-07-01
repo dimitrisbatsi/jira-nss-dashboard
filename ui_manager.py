@@ -13,7 +13,7 @@ st.title("🚀 Data Warehouse ETL Manager")
 st.markdown("Διαχειριστικό περιβάλλον για τον συγχρονισμό δεδομένων από Gemini και Jira στο SQL Server.")
 
 # Δημιουργία Tabs (Καρτέλες)
-tab1, tab2 = st.tabs(["⚡ Μεμονωμένες Ενέργειες", "📦 Μαζικός Συγχρονισμός"])
+tab1, tab2, tab3 = st.tabs(["⚡ Μεμονωμένες Ενέργειες", "📦 Μαζικός Συγχρονισμός", "🔄 Gemini ➔ Jira Migration"])
 
 with tab1:
     st.subheader("Συγχρονισμός ανά Οντότητα (Dimensions & Facts)")
@@ -77,3 +77,7 @@ with tab2:
         end_time = time.time()
         mins, secs = divmod(int(end_time - start_time), 60)
         st.success(f"🎉 Όλα τα δεδομένα συγχρονίστηκαν επιτυχώς σε {mins} λεπτά και {secs} δευτερόλεπτα!")
+
+with tab3:
+    from src.etl.migrator import render_migration_tab
+    render_migration_tab()

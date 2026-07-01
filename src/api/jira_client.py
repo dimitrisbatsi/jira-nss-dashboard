@@ -189,8 +189,206 @@ class JiraAPIClient:
         except StopIteration:
             print("[!] Το API δεν επέστρεψε δεδομένα.")
 
+    def load_all_users(self):
+        """Φέρνει όλους τους χρήστες από το Jira και τους βάζει σε ένα dictionary mapping email -> accountId."""
+        self._user_map = {}
+        endpoint = f"{self.base_url}/rest/api/3/users/search"
+        params = {"maxResults": 1000}
+        try:
+            response = requests.get(endpoint, headers=self.headers, params=params, timeout=30)
+            response.raise_for_status()
+            users = response.json()
+            for u in users:
+                email = u.get("emailAddress")
+                acc_id = u.get("accountId")
+                if email and acc_id:
+                    self._user_map[email.lower()] = acc_id
+            print(f"Loaded {len(self._user_map)} users into cache.")
+        except Exception as e:
+            print(f"Error loading Jira users: {e}")
+
+    def get_cached_account_id(self, email: str) -> Optional[str]:
+        if not hasattr(self, "_user_map"):
+            self.load_all_users()
+        if not email:
+            return None
+        return self._user_map.get(email.lower())
+
+    def _send_to_jira(self, fields: dict) -> str:
+        # Extract assignee if present to assign it via a separate PUT request,
+        # preventing "Field 'assignee' cannot be set on create screen" errors.
+        assignee_data = fields.pop("assignee", None)
+        
+        endpoint = f"{self.base_url}/rest/api/3/issue"
+        payload = {"fields": fields}
+        response = requests.post(endpoint, json=payload, headers=self.headers, timeout=30)
+        if response.status_code not in [200, 201]:
+            raise Exception(f"Jira API Error: {response.status_code} - {response.text}")
+            
+        issue_key = response.json()["key"]
+        
+        # If there was an assignee, set it now
+        if assignee_data and "id" in assignee_data:
+            self.assign_issue(issue_key, assignee_data["id"])
+            
+        return issue_key
+
+    def assign_issue(self, issue_key: str, account_id: str) -> bool:
+        """Αναθέτει ένα issue σε έναν χρήστη βάσει του Jira Account ID."""
+        endpoint = f"{self.base_url}/rest/api/3/issue/{issue_key}/assignee"
+        payload = {"accountId": account_id}
+        try:
+            response = requests.put(endpoint, json=payload, headers=self.headers, timeout=30)
+            if response.status_code in [200, 204]:
+                return True
+            print(f"[!] Failed to assign issue {issue_key}: {response.status_code} - {response.text}")
+        except Exception as e:
+            print(f"[!] Error assigning issue {issue_key}: {e}")
+        return False
+
+    def create_epic(self, fields: dict) -> str:
+        fields["issuetype"] = {"name": "Epic"}
+        fields["customfield_10011"] = fields.get("summary", "Epic Name")
+        return self._send_to_jira(fields)
+
+    def create_child_issue(self, fields: dict, parent_key: str, issue_type: str) -> str:
+        fields["issuetype"] = {"name": issue_type}
+        fields["parent"] = {"key": parent_key}
+        return self._send_to_jira(fields)
+
+    def create_single_issue(self, fields: dict, issue_type: str) -> str:
+        fields["issuetype"] = {"name": issue_type}
+        return self._send_to_jira(fields)
+
+    def add_comment(self, issue_key: str, body: str, author: str, created_date: str) -> bool:
+        endpoint = f"{self.base_url}/rest/api/3/issue/{issue_key}/comment"
+        header_text = f"📝 [Original by {author} on {created_date}]\n"
+        
+        # Atlassian Document Format (ADF)
+        payload = {
+            "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": header_text,
+                                "marks": [{"type": "strong"}]
+                            },
+                            {
+                                "type": "text",
+                                "text": "\n"
+                            },
+                            {
+                                "type": "text",
+                                "text": body or ""
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+        response = requests.post(endpoint, json=payload, headers=self.headers, timeout=30)
+        if response.status_code not in [200, 201]:
+            print(f"Failed to add comment to {issue_key}: {response.text}")
+            return False
+        return True
+
+    def create_time_entry(self, parent_issue_key: str, summary: str, assignee_id: Optional[str] = None, time_type: Optional[str] = None, charge_type: Optional[str] = None) -> str:
+        project_key = parent_issue_key.split('-')[0]
+        fields = {
+            "project": {"key": project_key},
+            "parent": {"key": parent_issue_key},
+            "issuetype": {"name": "Time Type"},
+            "summary": summary
+        }
+        if assignee_id:
+            fields["assignee"] = {"id": assignee_id}
+            
+        if time_type:
+            fields["customfield_XXXXX"] = {"value": time_type}
+        if charge_type:
+            fields["customfield_YYYYY"] = {"value": charge_type}
+            
+        return self._send_to_jira(fields)
+
+    def add_worklog(self, issue_key: str, time_spent: str, started: str, comment: str) -> bool:
+        endpoint = f"{self.base_url}/rest/api/3/issue/{issue_key}/worklog"
+        payload = {
+            "timeSpent": time_spent,
+            "started": started,
+            "comment": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": comment or "Gemini Migration Worklog"
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+        response = requests.post(endpoint, json=payload, headers=self.headers, timeout=30)
+        if response.status_code not in [200, 201]:
+            print(f"Failed to add worklog to {issue_key}: {response.text}")
+            return False
+        return True
+
+    def transition_issue(self, issue_key: str, transition_name: str) -> bool:
+        """Μεταφέρει την κατάσταση (status) ενός issue βάσει του ονόματος της μετάβασης (π.χ. 'In Progress')."""
+        endpoint_get = f"{self.base_url}/rest/api/3/issue/{issue_key}/transitions"
+        try:
+            response = requests.get(endpoint_get, headers=self.headers, timeout=30)
+            if response.status_code != 200:
+                return False
+            
+            transitions = response.json().get("transitions", [])
+            transition_id = None
+            
+            target_names = [transition_name.lower()]
+            if transition_name.lower() == "in progress":
+                target_names.extend(["σε εξέλιξη", "σε εξελιξη", "in progress"])
+                
+            for t in transitions:
+                name = t.get("name", "").lower()
+                if any(tn in name for tn in target_names):
+                    transition_id = t.get("id")
+                    break
+                    
+            if not transition_id:
+                for t in transitions:
+                    name = t.get("name", "").lower()
+                    if "progress" in name or "εξέλ" in name or "εξελ" in name:
+                        transition_id = t.get("id")
+                        break
+                        
+            if not transition_id:
+                print(f"[!] Transition '{transition_name}' not found for issue {issue_key}. Available: {[t.get('name') for t in transitions]}")
+                return False
+                
+            endpoint_post = f"{self.base_url}/rest/api/3/issue/{issue_key}/transitions"
+            payload = {"transition": {"id": transition_id}}
+            response = requests.post(endpoint_post, json=payload, headers=self.headers, timeout=30)
+            if response.status_code in [200, 204]:
+                return True
+            print(f"[!] Failed to transition issue {issue_key}: {response.status_code} - {response.text}")
+        except Exception as e:
+            print(f"[!] Error transitioning issue {issue_key}: {e}")
+        return False
+
+from typing import Optional
+
 # Αυτό μας επιτρέπει να τρέξουμε το αρχείο απευθείας για γρήγορο test από το τερματικό
 if __name__ == "__main__":
     client = JiraAPIClient()
     # client.test_connection()
     client.smoke_test_single_issue()
+

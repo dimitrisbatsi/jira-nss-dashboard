@@ -226,11 +226,7 @@ def main():
                     if not page_questions:
                         break
                         
-                    # Print raw structure of a question with options for diagnostics
-                    for q_test in page_questions:
-                        if q_test.get("options") is not None:
-                            print(f"[DEBUG] Raw question with options structure: {q_test}")
-                            break
+
                         
                     for q in page_questions:
                         q_id = q.get("question_id") if q.get("question_id") is not None else q.get("id")
