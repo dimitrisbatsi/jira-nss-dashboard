@@ -707,6 +707,7 @@ def render_migration_tab():
     from src.api.jira_client import JiraAPIClient
     from src.etl.migrator import process_migration, GeminiLookupCache
     from datetime import datetime, time as dt_time
+    from dateutil.relativedelta import relativedelta
     
     st.subheader("🔄 Countersoft Gemini ➔ Jira Migration Tool")
     st.markdown("Μεταφορά θεμάτων από το Gemini στο Jira Cloud (`PYLMIG`) με βάση τις καθορισμένες στρατηγικές και mappings.")
@@ -860,25 +861,47 @@ def render_migration_tab():
                         st.error(f"Error fetching projects: {e}")
                         
                     if selected_project_id:
-                        criteria = GeminiSearchCriteria(project_id=str(selected_project_id), max_items=int(filter_max_items))
-                        if start_date:
-                            criteria.created_after = datetime.combine(start_date, datetime.min.time())
-                        try:
-                            raw_issues = gemini_client.get_issues_advanced(criteria)
+                        # Safety: default start_date to 3 months ago if not specified
+                        actual_start_date = start_date
+                        if not actual_start_date:
+                            actual_start_date = (datetime.now() - relativedelta(months=3)).date()
+                            st.info("ℹ️ Η αναζήτηση περιορίστηκε αυτόματα στους τελευταίους 3 μήνες για αποφυγή Timeout.")
                             
+                        s_date = datetime.combine(actual_start_date, datetime.min.time())
+                        e_date = datetime.combine(end_date, datetime.max.time()) if end_date else datetime.now()
+                        
+                        raw_issues = []
+                        current_start = s_date
+                        
+                        # Loop and fetch in 3-month slices to avoid timeouts
+                        while current_start < e_date:
+                            current_end = current_start + relativedelta(months=3)
+                            if current_end > e_date:
+                                current_end = e_date
+                                
+                            criteria = GeminiSearchCriteria(
+                                project_id=str(selected_project_id),
+                                max_items=int(filter_max_items)
+                            )
+                            criteria.created_after = current_start
+                            criteria.created_before = current_end
+                            
+                            try:
+                                chunk_issues = gemini_client.get_issues_advanced(criteria)
+                                if chunk_issues:
+                                    raw_issues.extend(chunk_issues)
+                            except Exception as e:
+                                st.warning(f"⚠️ Σφάλμα λήψης πακέτου {current_start.strftime('%d/%m/%Y')} - {current_end.strftime('%d/%m/%Y')}: {e}")
+                                
+                            current_start = current_end
+                            
+                        try:
                             # Filter by search term
                             if batch_search:
                                 raw_issues = [
                                     i for i in raw_issues 
                                     if batch_search.lower() in (i.get("Entity", {}).get("Title", "") or "").lower()
                                     or batch_search.lower() in (i.get("Entity", {}).get("Description", "") or "").lower()
-                                ]
-                                
-                            # Filter by end date
-                            if end_date:
-                                raw_issues = [
-                                    x for x in raw_issues 
-                                    if datetime.fromisoformat((x.get("Entity", {}).get("Created") or x.get("Created")).replace("Z", "+00:00")).date() <= end_date
                                 ]
                                 
                             # Filter by advanced statuses
@@ -940,9 +963,19 @@ def render_migration_tab():
                                     else:
                                         raw_issues = [x for x in raw_issues if (x.get("FixedInVersion") or "").lower() in target_versions]
                                     
-                            found_issues = raw_issues
+                            # Remove duplicates
+                            unique_issues = []
+                            seen_ids = set()
+                            for item in raw_issues:
+                                entity = item.get("Entity", item.get("BaseEntity", {}))
+                                item_id = entity.get("Id")
+                                if item_id and item_id not in seen_ids:
+                                    seen_ids.add(item_id)
+                                    unique_issues.append(item)
+                                    
+                            found_issues = unique_issues
                         except Exception as e:
-                            st.error(f"Error calling get_issues_advanced: {e}")
+                            st.error(f"Error filtering issues: {e}")
                     else:
                         st.error(f"Το Project Code {batch_project} δεν βρέθηκε στο Gemini.")
                         

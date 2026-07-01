@@ -46,7 +46,9 @@ class GeminiSearchCriteria:
     max_items: int = 1000
     
     created_after: Optional[datetime] = None
+    created_before: Optional[datetime] = None
     updated_after: Optional[datetime] = None
+    updated_before: Optional[datetime] = None
 
 class GeminiAPIClient:
     def __init__(self):
@@ -213,8 +215,12 @@ class GeminiAPIClient:
 
         if criteria.created_after:
             payload["CreatedAfter"] = criteria.created_after.strftime("%Y-%m-%d")
+        if criteria.created_before:
+            payload["CreatedBefore"] = criteria.created_before.strftime("%Y-%m-%d")
         if criteria.updated_after:
             payload["RevisedAfter"] = criteria.updated_after.strftime("%Y-%m-%d")
+        if criteria.updated_before:
+            payload["RevisedBefore"] = criteria.updated_before.strftime("%Y-%m-%d")
 
         if criteria.custom_fields:
             payload["CustomFields"] = criteria.custom_fields
