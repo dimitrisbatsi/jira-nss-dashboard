@@ -188,22 +188,31 @@ def main():
                 for pc in cat_data.get("parent_categories", []):
                     p_id = pc.get("parent_category_id") if pc.get("parent_category_id") is not None else pc.get("id")
                     p_name = pc.get("parent_category_name") or pc.get("name")
-                    if p_id is not None:
-                        categories.append({
-                            "CategoryID": p_id,
-                            "CategoryName": p_name or f"Parent Category {p_id}",
-                            "ParentCategoryID": None
-                        })
+                    child_list = pc.get("categories") or []
                     
-                    for c in pc.get("categories") or []:
-                        c_id = c.get("category_id") if c.get("category_id") is not None else c.get("id")
-                        c_name = c.get("category_name") or c.get("name")
-                        c_parent = c.get("parent_category_id") if c.get("parent_category_id") is not None else p_id
-                        if c_id is not None:
+                    if p_id is not None:
+                        if len(child_list) > 0:
+                            # This is a parent category with subcategories, offset its ID to avoid collisions
                             categories.append({
-                                "CategoryID": c_id,
-                                "CategoryName": c_name or f"Category {c_id}",
-                                "ParentCategoryID": c_parent
+                                "CategoryID": p_id + 100000,
+                                "CategoryName": p_name or f"Parent Category {p_id}",
+                                "ParentCategoryID": None
+                            })
+                            for c in child_list:
+                                c_id = c.get("category_id") if c.get("category_id") is not None else c.get("id")
+                                c_name = c.get("category_name") or c.get("name")
+                                if c_id is not None:
+                                    categories.append({
+                                        "CategoryID": c_id,
+                                        "CategoryName": c_name or f"Category {c_id}",
+                                        "ParentCategoryID": p_id + 100000 # Point to offset parent
+                                    })
+                        else:
+                            # This is a flat category with no subcategories, keep its ID clean
+                            categories.append({
+                                "CategoryID": p_id,
+                                "CategoryName": p_name or f"Category {p_id}",
+                                "ParentCategoryID": None
                             })
                     
                 questions = []
