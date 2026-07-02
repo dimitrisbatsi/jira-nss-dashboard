@@ -151,14 +151,18 @@ graph TD
 * **`render_response_times_content()`**: Dashboard χρόνων απόκρισης (KPIs / SLAs).
 * **`render_etl_manager_content()`**: Σελίδα ελέγχου και εκτέλεσης των ETL διεργασιών.
 * **`render_classmarker_content()`**: Κεντρικό layout της σελίδας ClassMarker (Tabed UI με ερωτήσεις, αποτελέσματα, και εκκρεμότητες ελέγχου).
-* **`show_classmarker_questions(can_edit, can_manage)`**: Εμφανίζει την τράπεζα ερωτήσεων, λεπτομέρειες, κουμπί ETL sync, και κουμπί επεξεργασίας σε αναδυόμενο παράθυρο (modal dialog) ή φόρμα ανάθεσης ελέγχου.
+* **`show_classmarker_questions(can_edit, can_manage)`**: Εμφανίζει την τράπεζα ερωτήσεων με φίλτρα, υποστήριξη μαζικής επιλογής (multi-row selection) και κουμπιά ETL sync. Περιλαμβάνει τους μηχανισμούς **Εισαγωγής (Import)** και **Εξαγωγής (Export)** Excel.
 * **`edit_question_dialog(q_row, categories_df, users_map, can_manage)`**: Αναδυόμενο παράθυρο (`st.dialog`) για την επεξεργασία της ερώτησης και των επιλογών της (δυναμική εμφάνιση/επεξεργασία επιλογών βάσει του τύπου ερώτησης).
 * **`show_reviewer_queue(current_user_id)`**: Εμφανίζει τις ερωτήσεις που έχουν ανατεθεί στον τρέχοντα χρήστη για αξιολόγηση (Στάδιο 1, 2 ή 3) με δυνατότητα επιστροφής ή προώθησης.
-* **`update_local_question(...)`**: Ενημερώνει τοπικά την ερώτηση στη βάση δεδομένων και τη σημαδεύει ως τροποποιημένη (`IsLocallyModified = 1`).
+* **`update_local_question(...)`**: Ενημερώνει τοπικά την ερώτηση στη βάση δεδομένων και τη σημαδεύει ως τροποποιημένη (`IsLocallyModified = 1`). Αν η ερώτηση δεν υπάρχει στον πίνακα `CM_Questions_Original`, κρατάει πρώτα ένα αντίγραφο της αρχικής της μορφής (Snapshot).
 * **`assign_question_reviewer(...)`**: Αναθέτει την ερώτηση σε reviewer για συγκεκριμένο στάδιο ελέγχου.
 * **`push_question_to_classmarker(question_id)`**: Συγχρονίζει την τοπικά εγκεκριμένη ερώτηση πίσω στο ClassMarker API και επαναφέρει τη σήμανση τοπικής αλλαγής.
 * **`show_classmarker_results(can_manage)`**: Εμφανίζει τα αποτελέσματα, τις λεπτομέρειες proctoring (timeline από `ProctoringEventsJSON`), τα πεδία internal IDs, τις επιλογές αξιολόγησης και το mass actions form.
 * **`queue_classmarker_job(job_type, username)`**: Εισάγει ένα νέο pending sync job στην `ETL_Queue`.
+* **`Excel Import/Export & Bulk Assignment Workflow`**:
+  - **Export**: Μετατρέπει το JSON των απαντήσεων σε flat στήλες (`Option_A` έως `Option_F` και `Option_A_Correct` έως `Option_F_Correct`) και εξάγει ένα πλήρως δομημένο αρχείο Excel.
+  - **Import**: Διαβάζει το αρχείο Excel, εντοπίζει αλλαγές σε σχέση με τη βάση, κρατάει snapshot της αυθεντικής ερώτησης στο `CM_Questions_Original` και ενημερώνει την `CM_Questions` με `IsLocallyModified = 1`.
+  - **Bulk Assignment**: Χρησιμοποιεί την native επιλογή `multi-row` του `st.dataframe` της Streamlit 1.55+. Επιτρέπει τη μαζική ανάθεση των επιλεγμένων ερωτήσεων σε reviewer και Review Stage με ένα κλικ μέσω ενιαίου SQL Transaction block.
 * **`render_manual_content()`**: Σελίδα του Οδηγού Χρήσης (Manual).
 
 ### 4.9. Φόρτωση & Υπολογισμός Χρόνων Απόκρισης (KPIs / SLA)

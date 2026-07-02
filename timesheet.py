@@ -19,7 +19,7 @@ from modules.test_users_etl import run_users_etl, run_jira_users_etl
 from modules.test_components_etl import run_components_etl, run_jira_components_etl
 from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl
 
-APP_VERSION = "26.7.1a (2026-07-02)"
+APP_VERSION = "26.7.1b (2026-07-02)"
 
 # --- Helper functions for state updates ---
 def on_only_me_click(username):
@@ -4606,6 +4606,144 @@ def edit_question_dialog(q_row, categories_df, users_map, can_manage):
         else:
             st.button("📤 Αποστολή στο ClassMarker", use_container_width=True, disabled=True, help="Μόνο Administrators και ContentManagers μπορούν να στείλουν αλλαγές.")
 
+def process_excel_import(uploaded_file, engine):
+    try:
+        import_df = pd.read_excel(uploaded_file)
+        required_cols = ["QuestionText", "CategoryID", "Points", "Active"]
+        missing_cols = [c for c in required_cols if c not in import_df.columns]
+        if missing_cols:
+            st.error(f"❌ Το αρχείο Excel δεν περιέχει τις απαραίτητες στήλες: {', '.join(missing_cols)}")
+            return
+            
+        updated_count = 0
+        error_count = 0
+        import_errors = []
+        
+        with engine.connect() as conn:
+            current_db_qs = {
+                row[0]: (row[1], row[2], row[3], row[4], row[5], row[6])
+                for row in conn.execute(
+                    text("SELECT QuestionID, CategoryID, QuestionType, QuestionText, OptionsJSON, Points, Active FROM CM_Questions")
+                ).fetchall()
+            }
+        
+        # Track running negative draft ID counter
+        existing_ids = list(current_db_qs.keys())
+        min_id = min(existing_ids) if existing_ids else 0
+        current_draft_id = min_id - 1 if min_id < 0 else -1
+        
+        for _, row_item in import_df.iterrows():
+            q_id = row_item.get("QuestionID")
+            is_new = False
+            
+            if pd.isna(q_id) or (isinstance(q_id, (int, float)) and q_id < 0):
+                is_new = True
+            else:
+                try:
+                    q_id = int(q_id)
+                except ValueError:
+                    is_new = True
+                    
+            # Build OptionsJSON from Option_A..F
+            alphabet = ["A", "B", "C", "D", "E", "F"]
+            options_list = []
+            for char in alphabet:
+                opt_text = row_item.get(f"Option_{char}")
+                if pd.notna(opt_text) and str(opt_text).strip() != "":
+                    is_corr = int(row_item.get(f"Option_{char}_Correct")) if pd.notna(row_item.get(f"Option_{char}_Correct")) else 0
+                    options_list.append({
+                        "text": str(opt_text).strip(),
+                        "correct": bool(is_corr),
+                        "option_label": char
+                    })
+            new_options_json = json.dumps(options_list, ensure_ascii=False) if options_list else None
+            
+            if is_new or q_id not in current_db_qs:
+                # Insert as a new Draft question
+                target_q_id = current_draft_id
+                current_draft_id -= 1
+                
+                cat_id_val = int(row_item["CategoryID"]) if pd.notna(row_item["CategoryID"]) else 0
+                q_text_val = str(row_item["QuestionText"]).strip() if pd.notna(row_item["QuestionText"]) else ""
+                q_type_val = str(row_item.get("QuestionType", "multiplechoice")).strip().lower()
+                if q_type_val not in ["multiplechoice", "truefalse", "freetext", "essay", "multipleresponse", "matching", "longanswer-survey"]:
+                    q_type_val = "multiplechoice"
+                    
+                q_points_val = float(row_item["Points"]) if pd.notna(row_item["Points"]) else 1.0
+                q_active_val = int(row_item["Active"]) if pd.notna(row_item["Active"]) else 1
+                
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "INSERT INTO CM_Questions (QuestionID, CategoryID, QuestionType, QuestionText, OptionsJSON, Points, Active, IsLocallyModified, ReviewStage, UpdatedAt) "
+                                "VALUES (:id, :cat_id, :q_type, :q_text, :options, :points, :active, 1, 1, GETDATE())"
+                            ),
+                            {
+                                "id": int(target_q_id),
+                                "cat_id": int(cat_id_val),
+                                "q_type": q_type_val,
+                                "q_text": q_text_val,
+                                "options": new_options_json,
+                                "points": float(q_points_val),
+                                "active": int(q_active_val)
+                            }
+                        )
+                    updated_count += 1
+                except Exception as e_ins:
+                    error_count += 1
+                    import_errors.append(f"Εισαγωγή Νέας (Κείμενο: {q_text_val[:30]}...): {str(e_ins)}")
+                    print(f"[ERROR] Import insert failed: {e_ins}")
+            else:
+                # Update existing question
+                db_q = current_db_qs[q_id]
+                
+                cat_id_val = int(row_item["CategoryID"]) if pd.notna(row_item["CategoryID"]) else db_q[0]
+                q_text_val = str(row_item["QuestionText"]).strip() if pd.notna(row_item["QuestionText"]) else db_q[2]
+                q_points_val = float(row_item["Points"]) if pd.notna(row_item["Points"]) else db_q[4]
+                q_active_val = int(row_item["Active"]) if pd.notna(row_item["Active"]) else db_q[5]
+                
+                changed = (
+                    cat_id_val != db_q[0] or
+                    q_text_val != db_q[2] or
+                    new_options_json != db_q[3] or
+                    abs(float(q_points_val) - float(db_q[4])) > 0.01 or
+                    q_active_val != db_q[5]
+                )
+                
+                if changed:
+                    success = update_local_question(
+                        question_id=q_id,
+                        category_id=cat_id_val,
+                        text_content=q_text_val,
+                        options_json=new_options_json,
+                        points=q_points_val,
+                        active=bool(q_active_val)
+                    )
+                    if success:
+                        updated_count += 1
+                    else:
+                        error_count += 1
+                        import_errors.append(f"Ενημέρωση ID {q_id}: Σφάλμα κατά την αποθήκευση.")
+                        
+        if updated_count > 0:
+            st.success(f"✅ Επιτυχής ενημέρωση/εισαγωγή! Επεξεργάστηκαν/Προστέθηκαν **{updated_count}** ερωτήσεις.")
+            if import_errors:
+                with st.expander("⚠️ Σφάλματα κατά την εισαγωγή ορισμένων εγγράφων"):
+                    for err in import_errors:
+                        st.write(f"- {err}")
+            time.sleep(2)
+            st.rerun()
+        else:
+            if import_errors:
+                st.error("❌ Απέτυχε η εισαγωγή των νέων ερωτήσεων λόγω των ακόλουθων σφαλμάτων:")
+                for err in import_errors:
+                    st.markdown(f"* {err}")
+            else:
+                st.info("ℹ️ Δεν βρέθηκαν αλλαγές προς ενημέρωση στις ερωτήσεις του αρχείου Excel.")
+    except Exception as e_glob:
+        st.error(f"❌ Σφάλμα κατά την ανάγνωση του αρχείου: {e_glob}")
+
 def show_classmarker_questions(can_edit, can_manage):
     st.markdown("### 📝 Τράπεζα Ερωτήσεων ClassMarker")
     
@@ -4686,6 +4824,104 @@ def show_classmarker_questions(can_edit, can_manage):
         
     st.markdown(f"Βρέθηκαν **{len(filtered_qs)}** ερωτήσεις.")
     
+    # ------------------ Excel Import/Export Section ------------------
+    col_exp, col_imp = st.columns([1, 1])
+    
+    with col_exp:
+        # Prepare export dataframe
+        export_df = filtered_qs.copy() if not filtered_qs.empty else questions_df.copy()
+        
+        # Add Option columns A to F and Option_X_Correct
+        alphabet = ["A", "B", "C", "D", "E", "F"]
+        for char in alphabet:
+            export_df[f"Option_{char}"] = ""
+            export_df[f"Option_{char}_Correct"] = 0
+            
+        for idx, row_item in export_df.iterrows():
+            try:
+                opts = json.loads(row_item["OptionsJSON"]) if row_item["OptionsJSON"] else []
+                for o_idx, opt in enumerate(opts):
+                    if o_idx < 6:
+                        char = alphabet[o_idx]
+                        export_df.at[idx, f"Option_{char}"] = opt.get("text", "")
+                        export_df.at[idx, f"Option_{char}_Correct"] = 1 if opt.get("correct") else 0
+            except Exception:
+                pass
+                
+        cols_to_export = [
+            "QuestionID", "ParentCategoryName", "CategoryName", "CategoryID", 
+            "QuestionType", "QuestionText", "Points", "Active",
+            "Option_A", "Option_A_Correct",
+            "Option_B", "Option_B_Correct",
+            "Option_C", "Option_C_Correct",
+            "Option_D", "Option_D_Correct",
+            "Option_E", "Option_E_Correct",
+            "Option_F", "Option_F_Correct"
+        ]
+        cols_to_export = [c for c in cols_to_export if c in export_df.columns]
+        final_export_df = export_df[cols_to_export]
+        
+        import io
+        buffer = io.BytesIO()
+        try:
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                final_export_df.to_excel(writer, index=False, sheet_name='Questions')
+            buffer.seek(0)
+            st.download_button(
+                label="📥 Εξαγωγή σε Excel",
+                data=buffer,
+                file_name="CM_Questions_Export.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="cm_questions_export_btn"
+            )
+        except Exception as e_exp:
+            st.error(f"❌ Σφάλμα κατά τη δημιουργία του αρχείου Excel: {e_exp}")
+            
+    with col_imp:
+        with st.popover("ℹ️ Οδηγίες Γραμμογράφησης Excel", use_container_width=True):
+            st.markdown("""
+            ### 📋 Προδιαγραφές Αρχείου Excel για Εισαγωγή
+            
+            Για να πραγματοποιηθεί σωστά η εισαγωγή των ερωτήσεων, το αρχείο Excel πρέπει να περιλαμβάνει τις παρακάτω στήλες:
+            
+            #### 🔒 Υποχρεωτικές Στήλες
+            * **`QuestionID`**: Ο μοναδικός αναγνωριστικός αριθμός της ερώτησης (ακέραιος). *Αφήστε το κενό ή βάλτε αρνητικό αριθμό (π.χ. `-1`) για να προστεθεί ως νέα ερώτηση.*
+            * **`QuestionText`**: Το κείμενο της ερώτησης.
+            * **`CategoryID`**: Ο αριθμός ID της κατηγορίας (CategoryID) στην οποία ανήκει η ερώτηση (π.χ. `205`, `40`). Μπορείτε να τα βρείτε στην καρτέλα **📂 Κατηγορίες Ερωτήσεων**.
+            * **`Points`**: Οι βαθμοί της ερώτησης (δεκαδικός αριθμός, π.χ. `2.0`).
+            * **`Active`**: Κατάσταση ερώτησης. Τιμές: `1` (Ενεργή), `0` (Απενεργοποιημένη).
+            
+            #### 📝 Στήλες Απαντήσεων (Πολλαπλής Επιλογής)
+            * **`Option_A`** έως **`Option_F`**: Το κείμενο της κάθε επιλογής απάντησης (έως 6 επιλογές).
+            * **`Option_A_Correct`** έως **`Option_F_Correct`**: Δείκτης σωστής απάντησης. Τιμές: `1` (Σωστό), `0` (Λάθος).
+            
+            #### ❓ Διαθέσιμοι Τύποι Ερωτήσεων (στήλη `QuestionType`)
+            Οι τύποι ερωτήσεων που υποστηρίζει το ClassMarker είναι:
+            * **`multiplechoice`**: Πολλαπλής Επιλογής.
+            * **`truefalse`**: Σωστό / Λάθος.
+            * **`freetext`**: Ελεύθερο Κείμενο / Ανάπτυξης.
+            * **`essay`**: Έκθεση / Δοκίμιο.
+            * **`multipleresponse`**: Πολλαπλές Απαντήσεις (Checkboxes).
+            * **`matching`**: Αντιστοίχιση.
+            * **`longanswer-survey`**: Ελεύθερη Απάντηση (Survey).
+            
+            > [!TIP]
+            > Προτείνεται να κάνετε πρώτα **Εξαγωγή σε Excel** για να λάβετε ένα αρχείο με την ακριβή γραμμογράφηση και να κάνετε τις αλλαγές σας επάνω σε αυτό!
+            """)
+            
+        uploaded_file = st.file_uploader(
+            "Επιλέξτε αρχείο Excel (.xlsx)", 
+            type=["xlsx"], 
+            key="cm_questions_import_uploader_input_widget", 
+            label_visibility="collapsed"
+        )
+        if uploaded_file is not None:
+            if st.button("📤 Εκτέλεση Εισαγωγής", use_container_width=True, type="primary", key="cm_questions_import_execute_btn"):
+                process_excel_import(uploaded_file, engine)
+                
+    st.markdown("---")
+    
     # Display table showing status indicators
     df_display = filtered_qs.copy()
     df_display["Κατάσταση Αλλαγών"] = df_display["IsLocallyModified"].apply(
@@ -4694,7 +4930,7 @@ def show_classmarker_questions(can_edit, can_manage):
     stage_labels = {1: "Draft", 2: "Stage 1", 3: "Stage 2", 4: "Stage 3", 5: "Verified"}
     df_display["Στάδιο Review"] = df_display["ReviewStage"].map(stage_labels)
     
-    st.dataframe(
+    event = st.dataframe(
         df_display[["QuestionID", "ParentCategoryName", "CategoryName", "QuestionType", "QuestionText", "Points", "Active", "Κατάσταση Αλλαγών", "Στάδιο Review", "AssigneeName"]],
         use_container_width=True,
         hide_index=True,
@@ -4709,8 +4945,82 @@ def show_classmarker_questions(can_edit, can_manage):
             "Κατάσταση Αλλαγών": "Status",
             "Στάδιο Review": "Στάδιο",
             "AssigneeName": "Ανάθεση Σε"
-        }
+        },
+        on_select="rerun",
+        selection_mode="multi-row"
     )
+
+    selected_row_indices = []
+    if event and hasattr(event, "selection"):
+        selection_obj = getattr(event, "selection", None)
+        if selection_obj and hasattr(selection_obj, "rows"):
+            selected_row_indices = selection_obj.rows
+    elif isinstance(event, dict) and "selection" in event and "rows" in event["selection"]:
+        selected_row_indices = event["selection"]["rows"]
+
+    selected_q_ids = []
+    if selected_row_indices:
+        selected_q_ids = df_display.iloc[selected_row_indices]["QuestionID"].tolist()
+
+    if selected_q_ids:
+        st.markdown("### 👥 Μαζική Ανάθεση Ελέγχου")
+        st.info(f"📁 Έχετε επιλέξει **{len(selected_q_ids)}** ερωτήσεις για μαζική ανάθεση (IDs: {', '.join(map(str, selected_q_ids))}).")
+        
+        col_bulk_u, col_bulk_s = st.columns(2)
+        with col_bulk_u:
+            bulk_reviewer = st.selectbox(
+                "👤 Επιλέξτε Υπεύθυνο",
+                options=["-- Επιλέξτε Χρήστη --"] + list(users_map.keys()),
+                key="bulk_reviewer_selectbox"
+            )
+        with col_bulk_s:
+            bulk_stage = st.selectbox(
+                "📊 Στάδιο Ελέγχου",
+                options=["Στάδιο 1: Αρχικός Έλεγχος", "Στάδιο 2: Peer Review", "Στάδιο 3: Τελική Έγκριση"],
+                key="bulk_stage_selectbox"
+            )
+            
+        bulk_notes = st.text_area("✍️ Σημειώσεις / Οδηγίες Ελέγχου", placeholder="Προαιρετικές σημειώσεις για τον reviewer...", key="bulk_notes_textarea")
+        
+        if st.button("👥 Εκτέλεση Μαζικής Ανάθεσης", type="primary", use_container_width=True):
+            if bulk_reviewer == "-- Επιλέξτε Χρήστη --":
+                st.error("❌ Παρακαλώ επιλέξτε έναν έγκυρο υπεύθυνο χρήστη.")
+            else:
+                reviewer_id = int(users_map[bulk_reviewer])
+                stage_mapping = {
+                    "Στάδιο 1: Αρχικός Έλεγχος": 2,
+                    "Στάδιο 2: Peer Review": 3,
+                    "Στάδιο 3: Τελική Έγκριση": 4
+                }
+                target_stage = stage_mapping[bulk_stage]
+                current_user_id = st.session_state.get("user_id", 1)
+                
+                success_count = 0
+                try:
+                    with engine.begin() as conn:
+                        for q_id in selected_q_ids:
+                            conn.execute(
+                                text(
+                                    "UPDATE CM_Questions "
+                                    "SET AssignedToUserID = :rev_id, AssignedByUserID = :by_id, "
+                                    "    ReviewStage = :stage, ReviewNotes = :notes, IsLocallyModified = 1 "
+                                    "WHERE QuestionID = :id"
+                                ),
+                                {
+                                    "rev_id": int(reviewer_id),
+                                    "by_id": int(current_user_id),
+                                    "stage": int(target_stage),
+                                    "notes": bulk_notes if bulk_notes else None,
+                                    "id": int(q_id)
+                                }
+                            )
+                            success_count += 1
+                except Exception as e_bulk:
+                    st.error(f"❌ Σφάλμα κατά τη μαζική ανάθεση: {e_bulk}")
+                    
+                if success_count > 0:
+                    st.success(f"✅ Επιτυχής ανάθεση! **{success_count}** ερωτήσεις ανατέθηκαν στον {bulk_reviewer}.")
+                    st.rerun()
     
     st.markdown("#### 🔍 Λεπτομέρειες & Επεξεργασία Ερώτησης")
     selected_q_id = st.selectbox(
@@ -5096,6 +5406,40 @@ def show_classmarker_results(can_manage):
                 except Exception as e:
                     st.error(f"❌ Σφάλμα: {e}")
 
+def show_classmarker_categories():
+    st.markdown("### 📂 Κατηγορίες Ερωτήσεων ClassMarker")
+    st.caption("Προβολή των διαθέσιμων κατηγοριών και των γονικών τους κατηγοριών από τη βάση δεδομένων (DWH).")
+    
+    engine = get_db_engine()
+    if not engine:
+        st.error("❌ Αδυναμία σύνδεσης στη βάση δεδομένων.")
+        return
+        
+    try:
+        with engine.connect() as conn:
+            # Query categories and parent categories
+            categories_df = pd.read_sql(
+                "SELECT c.CategoryID AS [ID Κατηγορίας], c.CategoryName AS [Όνομα Κατηγορίας], "
+                "       COALESCE(c.ParentCategoryID, 0) AS [ID Γονικής Κατηγορίας], "
+                "       COALESCE(p.CategoryName, 'N/A') AS [Όνομα Γονικής Κατηγορίας] "
+                "FROM CM_Categories c "
+                "LEFT JOIN CM_Categories p ON c.ParentCategoryID = p.CategoryID "
+                "ORDER BY c.CategoryName", 
+                conn
+            )
+            
+        st.dataframe(
+            categories_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "ID Κατηγορίας": st.column_config.NumberColumn("ID Κατηγορίας", format="%d"),
+                "ID Γονικής Κατηγορίας": st.column_config.NumberColumn("ID Γονικής Κατηγορίας", format="%d")
+            }
+        )
+    except Exception as e:
+        st.error(f"❌ Σφάλμα κατά τη φόρτωση των κατηγοριών: {e}")
+
 def render_classmarker_content():
     st.subheader("🎓 Πιστοποιήσεις ClassMarker", divider="blue")
     
@@ -5142,6 +5486,10 @@ def render_classmarker_content():
     # Tab 3: Review / Approval Queue (All logged-in roles)
     tab_titles.append("📥 Εκκρεμότητες Ελέγχου")
     tab_callbacks.append(lambda: show_reviewer_queue(st.session_state.user_id))
+    
+    # Tab 4: Category List (All logged-in roles)
+    tab_titles.append("📂 Κατηγορίες Ερωτήσεων")
+    tab_callbacks.append(lambda: show_classmarker_categories())
     
     if tab_titles:
         tabs = st.tabs(tab_titles)
