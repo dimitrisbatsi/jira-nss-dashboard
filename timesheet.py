@@ -19,7 +19,7 @@ from modules.test_users_etl import run_users_etl, run_jira_users_etl
 from modules.test_components_etl import run_components_etl, run_jira_components_etl
 from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl
 
-APP_VERSION = "26.6.2b (2026-07-01)"
+APP_VERSION = "26.7.1a (2026-07-02)"
 
 # --- Helper functions for state updates ---
 def on_only_me_click(username):
@@ -3773,7 +3773,7 @@ def render_manual_content():
         * **Κατηγορίες (Components)**: Φιλτράρισμα με βάση τα Jira Components.
         * **🔄 Καθαρισμός Φίλτρων**: Επαναφέρει όλα τα φίλτρα στις αρχικές τους τιμές με ένα κλικ.
         """)
-        
+
     # expander 2: Saved Previews
     with st.expander("💾 2. Αποθηκευμένα Previews (Φίλτρα)"):
         st.markdown("""
@@ -3984,6 +3984,38 @@ def update_local_question(question_id, category_id, text_content, options_json, 
         return False
     try:
         with engine.begin() as conn:
+            # Check if original question is already saved
+            orig_check = conn.execute(
+                text("SELECT 1 FROM CM_Questions_Original WHERE QuestionID = :id"),
+                {"id": question_id}
+            ).fetchone()
+            
+            if not orig_check:
+                # Retrieve current state from CM_Questions to keep as original
+                current_q = conn.execute(
+                    text("SELECT CategoryID, QuestionType, QuestionText, OptionsJSON, Points, Active FROM CM_Questions WHERE QuestionID = :id"),
+                    {"id": question_id}
+                ).fetchone()
+                
+                if current_q:
+                    conn.execute(
+                        text(
+                            "INSERT INTO CM_Questions_Original (QuestionID, CategoryID, QuestionType, QuestionText, OptionsJSON, Points, Active, SavedAt) "
+                            "VALUES (:id, :cat_id, :q_type, :q_text, :options, :points, :active, :now)"
+                        ),
+                        {
+                            "id": question_id,
+                            "cat_id": current_q[0],
+                            "q_type": current_q[1],
+                            "q_text": current_q[2],
+                            "options": current_q[3],
+                            "points": current_q[4],
+                            "active": current_q[5],
+                            "now": datetime.now()
+                        }
+                    )
+            
+            # Apply local modifications
             conn.execute(
                 text(
                     "UPDATE CM_Questions "
@@ -4083,6 +4115,10 @@ def push_question_to_classmarker(question_id):
                     text("UPDATE CM_Questions SET IsLocallyModified = 0, SyncedAt = :now WHERE QuestionID = :id"),
                     {"now": datetime.now(), "id": question_id}
                 )
+                conn.execute(
+                    text("DELETE FROM CM_Questions_Original WHERE QuestionID = :id"),
+                    {"id": question_id}
+                )
             return True
         except Exception as e:
             st.error(f"❌ Σφάλμα: {e}")
@@ -4127,6 +4163,10 @@ def push_question_to_classmarker(question_id):
                     text("UPDATE CM_Questions SET IsLocallyModified = 0, SyncedAt = :now WHERE QuestionID = :id"),
                     {"now": datetime.now(), "id": question_id}
                 )
+                conn.execute(
+                    text("DELETE FROM CM_Questions_Original WHERE QuestionID = :id"),
+                    {"id": question_id}
+                )
             return True
         else:
             st.error(f"❌ Το ClassMarker API επέστρεψε σφάλμα {res.status_code}: {res.text}")
@@ -4151,13 +4191,23 @@ def show_reviewer_queue(current_user_id):
             ).fetchall()
             users_map = {f"{r[1]} ({r[2]})": r[0] for r in users_res}
             
+            categories_df = pd.read_sql(
+                "SELECT c.CategoryID, c.CategoryName, p.CategoryName AS ParentCategoryName "
+                "FROM CM_Categories c "
+                "LEFT JOIN CM_Categories p ON c.ParentCategoryID = p.CategoryID "
+                "ORDER BY c.CategoryName", 
+                conn
+            )
+            
             # Fetch assigned questions
             query = text(
-                "SELECT q.QuestionID, q.CategoryID, c.CategoryName, q.QuestionType, q.QuestionText, "
-                "       q.OptionsJSON, q.Points, q.Active, q.ReviewStage, q.ReviewNotes, q.PreviousAssigneeID, "
+                "SELECT q.QuestionID, q.CategoryID, c.CategoryName, p.CategoryName AS ParentCategoryName, "
+                "       q.QuestionType, q.QuestionText, q.OptionsJSON, q.Points, q.Active, q.ReviewStage, "
+                "       q.ReviewNotes, q.PreviousAssigneeID, q.IsLocallyModified, "
                 "       u.DisplayName AS AssignedByName "
                 "FROM CM_Questions q "
                 "JOIN CM_Categories c ON q.CategoryID = c.CategoryID "
+                "LEFT JOIN CM_Categories p ON c.ParentCategoryID = p.CategoryID "
                 "LEFT JOIN Users u ON q.AssignedByUserID = u.UserID "
                 "WHERE q.AssignedToUserID = :user_id AND q.ReviewStage IN (2, 3, 4)"
             )
@@ -4183,11 +4233,12 @@ def show_reviewer_queue(current_user_id):
     df_display["Στάδιο"] = df_display["ReviewStage"].map(stage_names)
     
     st.dataframe(
-        df_display[["QuestionID", "CategoryName", "QuestionType", "QuestionText", "Στάδιο", "AssignedByName"]],
+        df_display[["QuestionID", "ParentCategoryName", "CategoryName", "QuestionType", "QuestionText", "Στάδιο", "AssignedByName"]],
         use_container_width=True,
         hide_index=True,
         column_config={
             "QuestionID": st.column_config.NumberColumn("ID", format="%d"),
+            "ParentCategoryName": "Γονική Κατηγορία",
             "CategoryName": "Κατηγορία",
             "QuestionType": "Τύπος",
             "QuestionText": "Κείμενο Ερώτησης",
@@ -4207,7 +4258,56 @@ def show_reviewer_queue(current_user_id):
     if sel_rev_id:
         q_row = df_reviews[df_reviews["QuestionID"] == sel_rev_id].iloc[0]
         st.info(f"**Ερώτηση (ID {q_row['QuestionID']}):** {q_row['QuestionText']}")
-        st.markdown(f"**Κατηγορία:** {q_row['CategoryName']} | **Τύπος:** {q_row['QuestionType']} | **Στάδιο:** {stage_names.get(q_row['ReviewStage'])}")
+        st.markdown(
+            f"**Γονική Κατηγορία:** {q_row['ParentCategoryName'] or 'N/A'} | "
+            f"**Κατηγορία:** {q_row['CategoryName']} | "
+            f"**Τύπος:** {q_row['QuestionType']} | "
+            f"**Στάδιο:** {stage_names.get(q_row['ReviewStage'])}"
+        )
+        
+        # Original Question Compare Section
+        orig_row = None
+        if q_row["IsLocallyModified"] in (1, True, "1"):
+            try:
+                with engine.connect() as conn:
+                    orig_row = conn.execute(
+                        text("SELECT CategoryID, QuestionType, QuestionText, OptionsJSON, Points, Active FROM CM_Questions_Original WHERE QuestionID = :id"),
+                        {"id": sel_rev_id}
+                    ).fetchone()
+            except Exception:
+                pass
+                
+        if orig_row:
+            with st.expander("👀 Σύγκριση Αλλαγών με την Αρχική Ερώτηση (Diff)"):
+                col_orig, col_mod = st.columns(2)
+                with col_orig:
+                    st.markdown("**📜 Αρχική Έκδοση (ClassMarker)**")
+                    st.write(orig_row[2])
+                    st.caption(f"**Βαθμοί:** {orig_row[4]} | **Κατάσταση:** {'Ενεργή' if orig_row[5] else 'Ανενεργή'}")
+                    try:
+                        orig_opts = json.loads(orig_row[3])
+                        if orig_opts:
+                            for o_idx, o in enumerate(orig_opts, 1):
+                                txt = o.get("text", "")
+                                is_corr = o.get("correct", False)
+                                lbl = o.get("option_label") or str(o_idx)
+                                st.markdown(f"{'✅' if is_corr else '❌'} **{lbl}**. {txt}")
+                    except Exception:
+                        pass
+                with col_mod:
+                    st.markdown("**✏️ Τροποποιημένη Έκδοση (Support Hub)**")
+                    st.write(q_row['QuestionText'])
+                    st.caption(f"**Βαθμοί:** {q_row['Points']} | **Κατάσταση:** {'Ενεργή' if q_row['Active'] else 'Ανενεργή'}")
+                    try:
+                        mod_opts = json.loads(q_row["OptionsJSON"])
+                        if mod_opts:
+                            for o_idx, o in enumerate(mod_opts, 1):
+                                txt = o.get("text", "")
+                                is_corr = o.get("correct", False)
+                                lbl = o.get("option_label") or str(o_idx)
+                                st.markdown(f"{'✅' if is_corr else '❌'} **{lbl}**. {txt}")
+                    except Exception:
+                        pass
         st.markdown(f"**Βαθμοί:** {q_row['Points']} | **Ανατέθηκε από:** {q_row['AssignedByName'] or 'N/A'}")
         
         # Display Options
@@ -4242,38 +4342,69 @@ def show_reviewer_queue(current_user_id):
         
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
-            if st.button("↩️ Επιστροφή στον Προηγούμενο", use_container_width=True, type="secondary", key=f"btn_return_{sel_rev_id}"):
-                prev_id = q_row["PreviousAssigneeID"] or q_row["AssignedByUserID"] or current_user_id
-                new_stage = max(1, int(q_row["ReviewStage"]) - 1)
-                try:
-                    with engine.begin() as conn:
-                        conn.execute(
-                            text(
-                                "UPDATE CM_Questions "
-                                "SET AssignedToUserID = :prev_id, AssignedByUserID = :curr_id, "
-                                "    ReviewStage = :stage, ReviewNotes = :notes, IsLocallyModified = 1 "
-                                "WHERE QuestionID = :id"
-                            ),
-                            {
-                                "prev_id": prev_id,
-                                "curr_id": current_user_id,
-                                "stage": new_stage,
-                                "notes": rev_notes if rev_notes else None,
-                                "id": sel_rev_id
-                            }
-                        )
-                    st.warning("🔄 Η ερώτηση επιστράφηκε στον προηγούμενο υπεύθυνο.")
-                    time.sleep(1)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Σφάλμα: {e}")
+            current_stage = int(q_row["ReviewStage"])
+            if current_stage == 2:
+                # Stage 1 (ReviewStage 2) cannot be returned to previous, but can be reset to Draft
+                if st.button("↩️ Επαναφορά σε Draft Status", use_container_width=True, type="secondary", key=f"btn_reset_draft_{sel_rev_id}"):
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text(
+                                    "UPDATE CM_Questions "
+                                    "SET AssignedToUserID = NULL, AssignedByUserID = NULL, PreviousAssigneeID = NULL, "
+                                    "    ReviewStage = 1, ReviewNotes = :notes, IsLocallyModified = 1 "
+                                    "WHERE QuestionID = :id"
+                                ),
+                                {
+                                    "notes": rev_notes if rev_notes else None,
+                                    "id": int(sel_rev_id)
+                                }
+                            )
+                        st.info("🔄 Η ερώτηση επαναφέρθηκε σε Draft status και αφαιρέθηκε ο υπεύθυνος.")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Σφάλμα: {e}")
+            else:
+                if st.button("↩️ Επιστροφή στον Προηγούμενο", use_container_width=True, type="secondary", key=f"btn_return_{sel_rev_id}"):
+                    prev_id = q_row["PreviousAssigneeID"] or q_row["AssignedByUserID"] or current_user_id
+                    new_stage = int(max(1, int(q_row["ReviewStage"]) - 1))
                     
+                    # Convert to native types
+                    db_prev_id = int(prev_id) if pd.notna(prev_id) else None
+                    db_curr_id = int(current_user_id) if pd.notna(current_user_id) else None
+                    
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text(
+                                    "UPDATE CM_Questions "
+                                    "SET AssignedToUserID = :prev_id, AssignedByUserID = :curr_id, "
+                                    "    ReviewStage = :stage, ReviewNotes = :notes, IsLocallyModified = 1 "
+                                    "WHERE QuestionID = :id"
+                                ),
+                                {
+                                    "prev_id": db_prev_id,
+                                    "curr_id": db_curr_id,
+                                    "stage": int(new_stage),
+                                    "notes": rev_notes if rev_notes else None,
+                                    "id": int(sel_rev_id)
+                                }
+                            )
+                        st.warning("🔄 Η ερώτηση επιστράφηκε στον προηγούμενο υπεύθυνο.")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Σφάλμα: {e}")
+                        
         with col_btn2:
             current_stage = int(q_row["ReviewStage"])
             if current_stage == 4:
                 # Stage 3 review, i.e., final approval promotes to stage 5 (verified) and clears assignment
                 btn_label = "✅ Οριστική Έγκριση ερώτησης (Στάδιο 5)"
                 if st.button(btn_label, use_container_width=True, type="primary", key=f"btn_promote_{sel_rev_id}"):
+                    # Convert to native types
+                    db_curr_id = int(current_user_id) if pd.notna(current_user_id) else None
                     try:
                         with engine.begin() as conn:
                             conn.execute(
@@ -4284,9 +4415,9 @@ def show_reviewer_queue(current_user_id):
                                     "WHERE QuestionID = :id"
                                 ),
                                 {
-                                    "curr_id": current_user_id,
+                                    "curr_id": db_curr_id,
                                     "notes": rev_notes if rev_notes else None,
-                                    "id": sel_rev_id
+                                    "id": int(sel_rev_id)
                                 }
                             )
                         st.success("✅ Η ερώτηση εγκρίθηκε οριστικά και σημειώθηκε ως verified (Στάδιο 5)!")
@@ -4295,7 +4426,7 @@ def show_reviewer_queue(current_user_id):
                     except Exception as e:
                         st.error(f"❌ Σφάλμα: {e}")
             else:
-                next_stage = current_stage + 1
+                next_stage = int(current_stage + 1)
                 st.write(f"**Προώθηση στο επόμενο στάδιο: {stage_names.get(next_stage)}**")
                 sel_next_reviewer = st.selectbox(
                     "Επιλέξτε επόμενο υπεύθυνο ελέγχου:",
@@ -4308,6 +4439,9 @@ def show_reviewer_queue(current_user_id):
                         st.warning("⚠️ Παρακαλώ επιλέξτε τον επόμενο χρήστη για την ανάθεση.")
                     else:
                         next_user_id = users_map[sel_next_reviewer]
+                        # Convert to native types
+                        db_next_uid = int(next_user_id) if pd.notna(next_user_id) else None
+                        db_curr_id = int(current_user_id) if pd.notna(current_user_id) else None
                         try:
                             with engine.begin() as conn:
                                 conn.execute(
@@ -4319,11 +4453,11 @@ def show_reviewer_queue(current_user_id):
                                         "WHERE QuestionID = :id"
                                     ),
                                     {
-                                        "next_uid": next_user_id,
-                                        "curr_id": current_user_id,
-                                        "stage": next_stage,
+                                        "next_uid": db_next_uid,
+                                        "curr_id": db_curr_id,
+                                        "stage": int(next_stage),
                                         "notes": rev_notes if rev_notes else None,
-                                        "id": sel_rev_id
+                                        "id": int(sel_rev_id)
                                     }
                                 )
                             st.success(f"▶️ Η ερώτηση προωθήθηκε στον/στην {sel_next_reviewer}.")
@@ -4331,6 +4465,26 @@ def show_reviewer_queue(current_user_id):
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌ Σφάλμα: {e}")
+
+        # Send to ClassMarker button in review queue if user has manager rights (can_manage)
+        role = st.session_state.user_role
+        can_manage_cm = role in ["Administrator", "ContentManager"]
+        can_edit_cm = role in ["Administrator", "ContentManager", "ContentCreator"]
+        if can_manage_cm:
+            st.markdown("---")
+            is_mod = q_row["IsLocallyModified"] in (1, True, "1")
+            btn_disabled = not is_mod
+            if st.button("📤 Αποστολή στο ClassMarker", use_container_width=True, disabled=btn_disabled, key=f"rev_btn_push_{sel_rev_id}"):
+                with st.spinner("Αποστολή στο ClassMarker API..."):
+                    if push_question_to_classmarker(sel_rev_id):
+                        st.success("✅ Οι αλλαγές συγχρονίστηκαν στο ClassMarker!")
+                        time.sleep(1)
+                        st.rerun()
+                        
+        if can_edit_cm:
+            st.markdown("---")
+            if st.button("🛠️ Επεξεργασία Ερώτησης (Αναδυόμενο Παράθυρο)", use_container_width=True, type="primary", key=f"btn_trigger_edit_rev_{sel_rev_id}"):
+                edit_question_dialog(q_row, categories_df, users_map, can_manage_cm)
 
 @st.dialog("🛠️ Επεξεργασία Ερώτησης", width="large")
 def edit_question_dialog(q_row, categories_df, users_map, can_manage):
@@ -4380,31 +4534,56 @@ def edit_question_dialog(q_row, categories_df, users_map, can_manage):
         elif isinstance(options, list):
             normalized_options = options
             
-        if normalized_options:
-            for o_idx, opt in enumerate(normalized_options):
-                col_o1, col_o2 = st.columns([4, 1])
-                label = opt.get("option_label") or str(o_idx + 1)
-                with col_o1:
-                    opt_t = st.text_input(f"Επιλογή {label}", value=opt.get("text", ""), key=f"dialog_opt_t_{question_id}_{o_idx}")
-                with col_o2:
-                    opt_c = st.checkbox("Σωστή", value=opt.get("correct", False), key=f"dialog_opt_c_{question_id}_{o_idx}")
-                edited_options.append({"text": opt_t, "correct": opt_c, "option_label": label})
+        session_key = f"edit_opts_list_{question_id}"
+        if session_key not in st.session_state:
+            st.session_state[session_key] = normalized_options
+            
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        
+        if q_type in ["true_false", "truefalse"]:
+            num_options = 2
         else:
-            st.caption("Δεν βρέθηκαν προκαθορισμένες επιλογές.")
+            num_options = st.number_input(
+                "Πλήθος Επιλογών Απαντήσεων (2-6):", 
+                min_value=2, 
+                max_value=6, 
+                value=int(len(st.session_state[session_key])),
+                key=f"dialog_num_opts_{question_id}"
+            )
+            
+        # Adjust session state list length dynamically
+        while len(st.session_state[session_key]) < num_options:
+            next_label = alphabet[len(st.session_state[session_key])]
+            st.session_state[session_key].append({"text": "", "correct": False, "option_label": next_label})
+            
+        while len(st.session_state[session_key]) > num_options:
+            st.session_state[session_key].pop()
+            
+        edited_options = []
+        for o_idx, opt in enumerate(st.session_state[session_key]):
+            col_o1, col_o2 = st.columns([4, 1])
+            label = opt.get("option_label") or alphabet[o_idx]
+            with col_o1:
+                opt_t = st.text_input(f"Επιλογή {label}", value=opt.get("text", ""), key=f"dialog_opt_t_{question_id}_{o_idx}")
+            with col_o2:
+                opt_c = st.checkbox("Σωστή", value=opt.get("correct", False), key=f"dialog_opt_c_{question_id}_{o_idx}")
+            edited_options.append({"text": opt_t, "correct": opt_c, "option_label": label})
+            
+        st.session_state[session_key] = edited_options
             
     st.write("---")
     col_save, col_push = st.columns(2)
     with col_save:
         if st.button("💾 Αποθήκευση στο Support Hub", use_container_width=True, type="primary", key=f"dialog_btn_save_{question_id}"):
             opt_json_str = json.dumps(edited_options, ensure_ascii=False) if edited_options else q_row["OptionsJSON"]
-            if update_local_question(question_id, edit_cat_id, edit_q_text, opt_json_str, edit_points, edit_active):
+            if update_local_question(int(question_id), int(edit_cat_id), edit_q_text, opt_json_str, float(edit_points), bool(edit_active)):
                 st.success("✅ Η ερώτηση αποθηκεύτηκε τοπικά!")
                 time.sleep(1)
                 st.rerun()
                 
     with col_push:
         if can_manage:
-            is_mod = (q_row["IsLocallyModified"] == 1)
+            is_mod = q_row["IsLocallyModified"] in (1, True, "1")
             btn_disabled = not is_mod
             if st.button("📤 Αποστολή στο ClassMarker", use_container_width=True, disabled=btn_disabled, key=f"dialog_btn_push_{question_id}"):
                 with st.spinner("Αποστολή στο ClassMarker API..."):
@@ -4436,13 +4615,20 @@ def show_classmarker_questions(can_edit, can_manage):
             
     try:
         with engine.connect() as conn:
-            categories_df = pd.read_sql("SELECT CategoryID, CategoryName FROM CM_Categories ORDER BY CategoryName", conn)
+            categories_df = pd.read_sql(
+                "SELECT c.CategoryID, c.CategoryName, p.CategoryName AS ParentCategoryName "
+                "FROM CM_Categories c "
+                "LEFT JOIN CM_Categories p ON c.ParentCategoryID = p.CategoryID "
+                "ORDER BY c.CategoryName", 
+                conn
+            )
             questions_df = pd.read_sql(
-                "SELECT q.QuestionID, q.CategoryID, c.CategoryName, q.QuestionType, q.QuestionText, "
-                "       q.OptionsJSON, q.Points, q.Active, q.IsLocallyModified, q.ReviewStage, "
-                "       u.DisplayName AS AssigneeName "
+                "SELECT q.QuestionID, q.CategoryID, c.CategoryName, p.CategoryName AS ParentCategoryName, "
+                "       q.QuestionType, q.QuestionText, q.OptionsJSON, q.Points, q.Active, "
+                "       q.IsLocallyModified, q.ReviewStage, u.DisplayName AS AssigneeName "
                 "FROM CM_Questions q "
                 "JOIN CM_Categories c ON q.CategoryID = c.CategoryID "
+                "LEFT JOIN CM_Categories p ON c.ParentCategoryID = p.CategoryID "
                 "LEFT JOIN Users u ON q.AssignedToUserID = u.UserID", 
                 conn
             )
@@ -4459,17 +4645,26 @@ def show_classmarker_questions(can_edit, can_manage):
         st.info("Δεν βρέθηκαν συγχρονισμένες ερωτήσεις στη βάση δεδομένων. Παρακαλώ ξεκινήστε συγχρονισμό.")
         return
         
-    col_filter1, col_filter2, col_filter3 = st.columns([1, 1, 2])
+    col_filter1, col_filter2, col_filter3, col_filter4 = st.columns([1, 1, 1, 1.5])
     with col_filter1:
-        cat_options = ["Όλες οι Κατηγορίες"] + sorted(list(categories_df["CategoryName"].unique()))
-        selected_cat = st.selectbox("📂 Φιλτράρισμα ανά Κατηγορία", cat_options, key="select_cat_filter")
+        parent_options = ["Όλες οι Γονικές Κατηγορίες"] + sorted(list(categories_df["ParentCategoryName"].dropna().unique()))
+        selected_parent = st.selectbox("📂 Γονική Κατηγορία", parent_options, key="select_parent_cat_filter")
     with col_filter2:
+        if selected_parent != "Όλες οι Γονικές Κατηγορίες":
+            child_cats = categories_df[categories_df["ParentCategoryName"] == selected_parent]["CategoryName"].unique()
+        else:
+            child_cats = categories_df["CategoryName"].unique()
+        cat_options = ["Όλες οι Κατηγορίες"] + sorted(list(child_cats))
+        selected_cat = st.selectbox("📂 Κατηγορία", cat_options, key="select_cat_filter")
+    with col_filter3:
         type_options = ["Όλοι οι Τύποι"] + sorted(list(questions_df["QuestionType"].unique()))
         selected_type = st.selectbox("❓ Τύπος Ερώτησης", type_options, key="select_type_filter")
-    with col_filter3:
+    with col_filter4:
         search_query = st.text_input("🔍 Αναζήτηση στο κείμενο της ερώτησης", placeholder="Πληκτρολογήστε λέξεις κλειδιά...", key="search_query_input")
         
     filtered_qs = questions_df.copy()
+    if selected_parent != "Όλες οι Γονικές Κατηγορίες":
+        filtered_qs = filtered_qs[filtered_qs["ParentCategoryName"] == selected_parent]
     if selected_cat != "Όλες οι Κατηγορίες":
         filtered_qs = filtered_qs[filtered_qs["CategoryName"] == selected_cat]
     if selected_type != "Όλοι οι Τύποι":
@@ -4481,16 +4676,19 @@ def show_classmarker_questions(can_edit, can_manage):
     
     # Display table showing status indicators
     df_display = filtered_qs.copy()
-    df_display["Κατάσταση Αλλαγών"] = df_display["IsLocallyModified"].map({1: "⚠️ Local Edits", 0: "✅ Synced"})
+    df_display["Κατάσταση Αλλαγών"] = df_display["IsLocallyModified"].apply(
+        lambda x: "⚠️ Local Edits" if x in (1, True, "1") else "✅ Synced"
+    )
     stage_labels = {1: "Draft", 2: "Stage 1", 3: "Stage 2", 4: "Stage 3", 5: "Verified"}
     df_display["Στάδιο Review"] = df_display["ReviewStage"].map(stage_labels)
     
     st.dataframe(
-        df_display[["QuestionID", "CategoryName", "QuestionType", "QuestionText", "Points", "Active", "Κατάσταση Αλλαγών", "Στάδιο Review", "AssigneeName"]],
+        df_display[["QuestionID", "ParentCategoryName", "CategoryName", "QuestionType", "QuestionText", "Points", "Active", "Κατάσταση Αλλαγών", "Στάδιο Review", "AssigneeName"]],
         use_container_width=True,
         hide_index=True,
         column_config={
             "QuestionID": st.column_config.NumberColumn("ID", format="%d"),
+            "ParentCategoryName": "Γονική Κατηγορία",
             "CategoryName": "Κατηγορία",
             "QuestionType": "Τύπος",
             "QuestionText": "Κείμενο Ερώτησης",
@@ -4513,7 +4711,57 @@ def show_classmarker_questions(can_edit, can_manage):
     if selected_q_id:
         q_row = filtered_qs[filtered_qs["QuestionID"] == selected_q_id].iloc[0]
         st.info(f"**Ερώτηση (ID {q_row['QuestionID']}):** {q_row['QuestionText']}")
-        st.markdown(f"**Κατηγορία:** {q_row['CategoryName']} | **Τύπος:** {q_row['QuestionType']} | **Βαθμοί:** {q_row['Points']} | **Κατάσταση:** {'Ενεργή' if q_row['Active'] else 'Ανενεργή'}")
+        st.markdown(
+            f"**Γονική Κατηγορία:** {q_row['ParentCategoryName'] or 'N/A'} | "
+            f"**Κατηγορία:** {q_row['CategoryName']} | "
+            f"**Τύπος:** {q_row['QuestionType']} | "
+            f"**Βαθμοί:** {q_row['Points']} | "
+            f"**Κατάσταση:** {'Ενεργή' if q_row['Active'] else 'Ανενεργή'}"
+        )
+        
+        # Original Question Compare Section
+        orig_row = None
+        if q_row["IsLocallyModified"] in (1, True, "1"):
+            try:
+                with engine.connect() as conn:
+                    orig_row = conn.execute(
+                        text("SELECT CategoryID, QuestionType, QuestionText, OptionsJSON, Points, Active FROM CM_Questions_Original WHERE QuestionID = :id"),
+                        {"id": selected_q_id}
+                    ).fetchone()
+            except Exception:
+                pass
+                
+        if orig_row:
+            with st.expander("👀 Σύγκριση Αλλαγών με την Αρχική Ερώτηση (Diff)"):
+                col_orig, col_mod = st.columns(2)
+                with col_orig:
+                    st.markdown("**📜 Αρχική Έκδοση (ClassMarker)**")
+                    st.write(orig_row[2])
+                    st.caption(f"**Βαθμοί:** {orig_row[4]} | **Κατάσταση:** {'Ενεργή' if orig_row[5] else 'Ανενεργή'}")
+                    try:
+                        orig_opts = json.loads(orig_row[3])
+                        if orig_opts:
+                            for o_idx, o in enumerate(orig_opts, 1):
+                                txt = o.get("text", "")
+                                is_corr = o.get("correct", False)
+                                lbl = o.get("option_label") or str(o_idx)
+                                st.markdown(f"{'✅' if is_corr else '❌'} **{lbl}**. {txt}")
+                    except Exception:
+                        pass
+                with col_mod:
+                    st.markdown("**✏️ Τροποποιημένη Έκδοση (Support Hub)**")
+                    st.write(q_row['QuestionText'])
+                    st.caption(f"**Βαθμοί:** {q_row['Points']} | **Κατάσταση:** {'Ενεργή' if q_row['Active'] else 'Ανενεργή'}")
+                    try:
+                        mod_opts = json.loads(q_row["OptionsJSON"])
+                        if mod_opts:
+                            for o_idx, o in enumerate(mod_opts, 1):
+                                txt = o.get("text", "")
+                                is_corr = o.get("correct", False)
+                                lbl = o.get("option_label") or str(o_idx)
+                                st.markdown(f"{'✅' if is_corr else '❌'} **{lbl}**. {txt}")
+                    except Exception:
+                        pass
         
         # Display current options
         options = []
@@ -4839,6 +5087,29 @@ def show_classmarker_results(can_manage):
 def render_classmarker_content():
     st.subheader("🎓 Πιστοποιήσεις ClassMarker", divider="blue")
     
+    # Ensure CM_Questions_Original exists
+    try:
+        engine = get_db_engine()
+        if engine:
+            with engine.begin() as conn:
+                conn.execute(text("""
+                    IF OBJECT_ID('CM_Questions_Original', 'U') IS NULL
+                    BEGIN
+                        CREATE TABLE CM_Questions_Original (
+                            QuestionID INT PRIMARY KEY,
+                            CategoryID INT NOT NULL,
+                            QuestionType NVARCHAR(50) NOT NULL,
+                            QuestionText NVARCHAR(MAX) NOT NULL,
+                            OptionsJSON NVARCHAR(MAX) NULL,
+                            Points DECIMAL(5,2) DEFAULT 1.0,
+                            Active BIT DEFAULT 1,
+                            SavedAt DATETIME DEFAULT GETDATE()
+                        );
+                    END
+                """))
+    except Exception as e:
+        print(f"Error ensuring CM_Questions_Original exists: {e}")
+        
     role = st.session_state.user_role
     can_manage = role in ["Administrator", "ContentManager"]
     can_edit = role in ["Administrator", "ContentManager", "ContentCreator"]

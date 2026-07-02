@@ -1,4 +1,4 @@
-# Developer Documentation - NSS Timesheet App v26.6.1a
+# Developer Documentation - NSS Timesheet App v26.7.1a
 
 Αυτό το έγγραφο περιέχει τις τεχνικές λεπτομέρειες, την αρχιτεκτονική και την τεκμηρίωση των μεθόδων της εφαρμογής **NSS Timesheet Dashboard**. Είναι σχεδιασμένο για developers που θέλουν να συντηρήσουν, να επεκτείνουν ή να αποσφαλματώσουν την εφαρμογή.
 
@@ -67,6 +67,8 @@ graph TD
   * *Στήλες*: `CategoryID` (PK), `CategoryName`, `ParentCategoryID` (FK -> `CM_Categories.CategoryID`), `SyncedAt`.
 * **`CM_Questions`**: Αποθηκεύει τις ερωτήσεις, τις επιλογές απαντήσεων και τα μεταδεδομένα του workflow ελέγχου.
   * *Στήλες*: `QuestionID` (PK), `CategoryID` (FK -> `CM_Categories.CategoryID`), `QuestionType`, `QuestionText`, `OptionsJSON` (JSON array), `Points`, `Active`, `UpdatedAt`, `SyncedAt`, `ReviewStage` (INT, default 1 - Draft), `AssignedToUserID` (FK -> Users.UserID), `AssignedByUserID` (FK -> Users.UserID), `ReviewNotes` (NVARCHAR(MAX)), `PreviousAssigneeID` (FK -> Users.UserID), `IsLocallyModified` (BIT, default 0).
+* **`CM_Questions_Original`**: Αποθηκεύει προσωρινά snapshots των αρχικών ερωτήσεων προτού εφαρμοστούν τοπικές αλλαγές.
+  * *Στήλες*: `QuestionID` (PK), `CategoryID`, `QuestionType`, `QuestionText`, `OptionsJSON` (JSON), `Points`, `Active`, `SavedAt`.
 * **`CM_TestResults`**: Αποθηκεύει τα αποτελέσματα των εξετάσεων και τα συμβάντα Proctoring επιτήρησης.
   * *Στήλες*: `ResultID` (PK), `TestID`, `TestName`, `UserID`, `CandidateName`, `CandidateEmail`, `Score`, `Percentage`, `DurationSeconds`, `FinishedAt`, `ProctoringFlag`, `ProctoringEventsCount`, `ProctoringEventsJSON` (infraction events timeline), `ReviewStatus` ('Pending'/'Approved'/'Rejected'), `ReviewerNotes`, `ReviewedBy`, `ReviewedAt`, `CompanyCandidateID`, `CompanyPartnerID`, `SyncedAt`.
 
@@ -211,7 +213,16 @@ graph TD
 ### 5.5. [modules/test_comments_etl.py](modules/test_comments_etl.py)
 * **`run_incremental_comments_etl()`**: Εκτελεί μεμονωμένο incremental συγχρονισμό για τα σχόλια (Comments) των Issues.
 
-### 5.6. [etl_worker.py](etl_worker.py)
+### 5.6. [src/etl/migrator.py](src/etl/migrator.py) & [src/api/gemini_client.py](src/api/gemini_client.py)
+* **Gemini-to-Jira Migration Engine**: Υλοποιεί τον πλήρη μηχανισμό μεταφοράς αιτημάτων από το Gemini στο Jira Cloud API.
+  * **Auto-chunking Search**: Λόγω timeouts του Gemini API σε μεγάλα αιτήματα, το ETL σπάει το ημερομηνιακό εύρος σε μικρότερα διαστήματα (έως 3 μήνες) και εκτελεί διαδοχικές κλήσεις συγχρονίζοντας τα αποτελέσματα.
+  * **User Cache**: Διατηρεί τοπική cache χρηστών (`UserCache`) για τη γρήγορη αντιστοίχιση των resources (Gemini FullName -> Jira AccountID) με βάση το Email, το ονοματεπώνυμο ή fuzzy matching.
+  * **Jira Key Mapping**: Καταγράφει το νέο `JiraKey` στο custom field `GeminiJiraKey` του Gemini ώστε να συνδέονται αμφίδρομα τα δύο συστήματα.
+  * **Attachments Migration**: Ανιχνεύει τα αρχεία του Gemini, τα κατεβάζει μέσω API και τα κάνει upload στο αντίστοιχο Jira Issue.
+  * **Workflow & Status Mapping**: Αντιστοιχίζει το status του Gemini με το αντίστοιχο status του Jira workflow (π.χ. *Closed*, *Awaiting Customer*).
+
+
+### 5.7. [etl_worker.py](etl_worker.py)
 * **Background Worker**: Ένας αυτόνομος daemon που εκτελείται συνεχώς (polling loop ανά 3 δευτερόλεπτα) στον server. 
   * Αντλεί το παλαιότερο job με κατάσταση `Pending` από τον πίνακα `ETL_Queue`.
   * Εξασφαλίζει ότι εκτελείται μόνο ένα job τη φορά για την αποφυγή locks στη βάση.
@@ -220,7 +231,7 @@ graph TD
   * Ενημερώνει την κατάσταση του job σε `Running`, `Success` ή `Failed` ανάλογα με το exit code του subprocess.
   * **Self-Healing (Αυτο-ίαση)**: Κατά την εκκίνησή του, ο worker εντοπίζει αυτόματα τυχόν εργασίες που είχαν μείνει σε κατάσταση `Running` (λόγω προηγούμενης βίαιης διακοπής ή κρασαρίσματος του συστήματος) και τις θέτει αυτόματα σε κατάσταση `Failed` (Interrupted), απελευθερώνοντας άμεσα την ουρά.
 
-### 5.7. Μηχανισμός Αποφυγής & Διαχείρισης Deadlocks (Database Deadlock Handling)
+### 5.8. Μηχανισμός Αποφυγής & Διαχείρισης Deadlocks (Database Deadlock Handling)
 Για την αποφυγή συγκρούσεων (deadlocks) κατά την παράλληλη εκτέλεση του Streamlit Dashboard και του ETL Background Worker, εφαρμόζονται οι εξής τεχνικές στο [src/etl/loaders.py](src/etl/loaders.py):
 * **Δυναμική Ονοματολογία Staging Πινάκων (Dynamic Staging Tables)**: Αντί για στατικά ονόματα (π.χ. `GComments_StagingTemp`), οι προσωρινοί staging πίνακες παράγονται πλέον δυναμικά με μοναδικό τυχαίο suffix (π.χ. `GComments_Stg_<random_uuid_suffix>`). Αυτό εξαλείφει πλήρως τις συγκρούσεις κλειδωμάτων και τις αλληλοεπικαλύψεις μεταξύ διαφορετικών ETL jobs.
 * **Μηχανισμός Αυτόματης Επανάληψης (Retry Decorator on Deadlock)**: Όλες οι loaders συναρτήσεις (`upsert_issues`, `upsert_comments`, κλπ.) είναι διακοσμημένες με τον decorator `@retry_on_deadlock()`. Σε περίπτωση που ο SQL Server επιλέξει τη συναλλαγή ως θύμα deadlock (Error Code `1205`, SQLState `40001`), ο decorator εκτελεί αυτόματα rollback, περιμένει ένα μικρό διάστημα με τυχαία καθυστέρηση (exponential backoff with jitter) και επαναλαμβάνει τη συναλλαγή (έως 5 προσπάθειες) χωρίς να κρασάρει η διεργασία.

@@ -161,6 +161,27 @@ try:
         except Exception as e:
             print(f"  -> Warning creating/altering CM_Questions table: {e}")
 
+        # Create ClassMarker CM_Questions_Original table if not exists
+        try:
+            conn.execute(text("""
+                IF OBJECT_ID('CM_Questions_Original', 'U') IS NULL
+                BEGIN
+                    CREATE TABLE CM_Questions_Original (
+                        QuestionID INT PRIMARY KEY,
+                        CategoryID INT NOT NULL,
+                        QuestionType NVARCHAR(50) NOT NULL,
+                        QuestionText NVARCHAR(MAX) NOT NULL,
+                        OptionsJSON NVARCHAR(MAX) NULL,
+                        Points DECIMAL(5,2) DEFAULT 1.0,
+                        Active BIT DEFAULT 1,
+                        SavedAt DATETIME DEFAULT GETDATE()
+                    );
+                END
+            """))
+            print("  -> Table 'CM_Questions_Original' created or verified.")
+        except Exception as e:
+            print(f"  -> Warning creating CM_Questions_Original table: {e}")
+
         # Create ClassMarker CM_TestResults table if not exists
         try:
             conn.execute(text("""
