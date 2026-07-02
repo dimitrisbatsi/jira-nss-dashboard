@@ -21,6 +21,24 @@ from modules.test_issues_etl import run_incremental_issues_and_children_etl, run
 
 APP_VERSION = "26.7.1b (2026-07-02)"
 
+# --- Helper function to parse ClassMarker BBCode to Markdown ---
+def parse_cm_bbcode(text_val):
+    if not text_val or not isinstance(text_val, str):
+        return text_val
+    # Replace bold tags
+    text_val = re.sub(r'\[b\]', '**', text_val, flags=re.IGNORECASE)
+    text_val = re.sub(r'\[/b\]', '**', text_val, flags=re.IGNORECASE)
+    # Replace italic tags
+    text_val = re.sub(r'\[i\]', '*', text_val, flags=re.IGNORECASE)
+    text_val = re.sub(r'\[/i\]', '*', text_val, flags=re.IGNORECASE)
+    # Replace list tags
+    text_val = re.sub(r'\[ul\]', '', text_val, flags=re.IGNORECASE)
+    text_val = re.sub(r'\[/ul\]', '', text_val, flags=re.IGNORECASE)
+    # Replace list item tags
+    text_val = re.sub(r'\[li\]', '\n- ', text_val, flags=re.IGNORECASE)
+    text_val = re.sub(r'\[/li\]', '', text_val, flags=re.IGNORECASE)
+    return text_val
+
 # --- Helper functions for state updates ---
 def on_only_me_click(username):
     st.session_state["auth_key"] = [username]
@@ -4269,7 +4287,7 @@ def show_reviewer_queue(current_user_id):
     
     if sel_rev_id:
         q_row = df_reviews[df_reviews["QuestionID"] == sel_rev_id].iloc[0]
-        st.info(f"**Ερώτηση (ID {q_row['QuestionID']}):** {q_row['QuestionText']}")
+        st.info(f"**Ερώτηση (ID {q_row['QuestionID']}):**\n\n{parse_cm_bbcode(q_row['QuestionText'])}")
         st.markdown(
             f"**Γονική Κατηγορία:** {q_row['ParentCategoryName'] or 'N/A'} | "
             f"**Κατηγορία:** {q_row['CategoryName']} | "
@@ -4294,7 +4312,7 @@ def show_reviewer_queue(current_user_id):
                 col_orig, col_mod = st.columns(2)
                 with col_orig:
                     st.markdown("**📜 Αρχική Έκδοση (ClassMarker)**")
-                    st.write(orig_row[2])
+                    st.markdown(parse_cm_bbcode(orig_row[2]))
                     st.caption(f"**Βαθμοί:** {orig_row[4]} | **Κατάσταση:** {'Ενεργή' if orig_row[5] else 'Ανενεργή'}")
                     try:
                         orig_opts = json.loads(orig_row[3])
@@ -4303,12 +4321,12 @@ def show_reviewer_queue(current_user_id):
                                 txt = o.get("text", "")
                                 is_corr = o.get("correct", False)
                                 lbl = o.get("option_label") or str(o_idx)
-                                st.markdown(f"{'✅' if is_corr else '❌'} **{lbl}**. {txt}")
+                                st.markdown(f"{'✅' if is_corr else '❌'} **{lbl}**. {parse_cm_bbcode(txt)}")
                     except Exception:
                         pass
                 with col_mod:
                     st.markdown("**✏️ Τροποποιημένη Έκδοση (Support Hub)**")
-                    st.write(q_row['QuestionText'])
+                    st.markdown(parse_cm_bbcode(q_row['QuestionText']))
                     st.caption(f"**Βαθμοί:** {q_row['Points']} | **Κατάσταση:** {'Ενεργή' if q_row['Active'] else 'Ανενεργή'}")
                     try:
                         mod_opts = json.loads(q_row["OptionsJSON"])
@@ -4317,7 +4335,7 @@ def show_reviewer_queue(current_user_id):
                                 txt = o.get("text", "")
                                 is_corr = o.get("correct", False)
                                 lbl = o.get("option_label") or str(o_idx)
-                                st.markdown(f"{'✅' if is_corr else '❌'} **{lbl}**. {txt}")
+                                st.markdown(f"{'✅' if is_corr else '❌'} **{lbl}**. {parse_cm_bbcode(txt)}")
                     except Exception:
                         pass
         st.markdown(f"**Βαθμοί:** {q_row['Points']} | **Ανατέθηκε από:** {q_row['AssignedByName'] or 'N/A'}")
@@ -4342,9 +4360,9 @@ def show_reviewer_queue(current_user_id):
                     opt_text = opt.get("text", "")
                     label = opt.get("option_label") or str(idx)
                     if is_correct:
-                        st.markdown(f"✅ **{label}**. **{opt_text} (Σωστό)**")
+                        st.markdown(f"✅ **{label}**. {parse_cm_bbcode(opt_text)} **(Σωστό)**")
                     else:
-                        st.markdown(f"❌ **{label}**. {opt_text}")
+                        st.markdown(f"❌ **{label}**. {parse_cm_bbcode(opt_text)}")
         except Exception:
             pass
             
@@ -5032,7 +5050,7 @@ def show_classmarker_questions(can_edit, can_manage):
     
     if selected_q_id:
         q_row = filtered_qs[filtered_qs["QuestionID"] == selected_q_id].iloc[0]
-        st.info(f"**Ερώτηση (ID {q_row['QuestionID']}):** {q_row['QuestionText']}")
+        st.info(f"**Ερώτηση (ID {q_row['QuestionID']}):**\n\n{parse_cm_bbcode(q_row['QuestionText'])}")
         st.markdown(
             f"**Γονική Κατηγορία:** {q_row['ParentCategoryName'] or 'N/A'} | "
             f"**Κατηγορία:** {q_row['CategoryName']} | "
@@ -5058,7 +5076,7 @@ def show_classmarker_questions(can_edit, can_manage):
                 col_orig, col_mod = st.columns(2)
                 with col_orig:
                     st.markdown("**📜 Αρχική Έκδοση (ClassMarker)**")
-                    st.write(orig_row[2])
+                    st.markdown(parse_cm_bbcode(orig_row[2]))
                     st.caption(f"**Βαθμοί:** {orig_row[4]} | **Κατάσταση:** {'Ενεργή' if orig_row[5] else 'Ανενεργή'}")
                     try:
                         orig_opts = json.loads(orig_row[3])
@@ -5067,12 +5085,12 @@ def show_classmarker_questions(can_edit, can_manage):
                                 txt = o.get("text", "")
                                 is_corr = o.get("correct", False)
                                 lbl = o.get("option_label") or str(o_idx)
-                                st.markdown(f"{'✅' if is_corr else '❌'} **{lbl}**. {txt}")
+                                st.markdown(f"{'✅' if is_corr else '❌'} **{lbl}**. {parse_cm_bbcode(txt)}")
                     except Exception:
                         pass
                 with col_mod:
                     st.markdown("**✏️ Τροποποιημένη Έκδοση (Support Hub)**")
-                    st.write(q_row['QuestionText'])
+                    st.markdown(parse_cm_bbcode(q_row['QuestionText']))
                     st.caption(f"**Βαθμοί:** {q_row['Points']} | **Κατάσταση:** {'Ενεργή' if q_row['Active'] else 'Ανενεργή'}")
                     try:
                         mod_opts = json.loads(q_row["OptionsJSON"])
@@ -5081,7 +5099,7 @@ def show_classmarker_questions(can_edit, can_manage):
                                 txt = o.get("text", "")
                                 is_corr = o.get("correct", False)
                                 lbl = o.get("option_label") or str(o_idx)
-                                st.markdown(f"{'✅' if is_corr else '❌'} **{lbl}**. {txt}")
+                                st.markdown(f"{'✅' if is_corr else '❌'} **{lbl}**. {parse_cm_bbcode(txt)}")
                     except Exception:
                         pass
         
@@ -5106,9 +5124,9 @@ def show_classmarker_questions(can_edit, can_manage):
                     opt_text = opt.get("text", "")
                     label = opt.get("option_label") or str(idx)
                     if is_correct:
-                        st.markdown(f"✅ **{label}**. **{opt_text} (Σωστό)**")
+                        st.markdown(f"✅ **{label}**. {parse_cm_bbcode(opt_text)} **(Σωστό)**")
                     else:
-                        st.markdown(f"❌ **{label}**. {opt_text}")
+                        st.markdown(f"❌ **{label}**. {parse_cm_bbcode(opt_text)}")
         except Exception as e:
             st.caption(f"Δεν υπάρχουν δομημένες επιλογές (Σφάλμα: {e}).")
 
