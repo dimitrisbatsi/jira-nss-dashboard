@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "Jira Support Pilot",
+  "version": "1.0.0",
+  "description": "Chrome/Edge extension to simplify timesheet logging and client communication on Jira Cloud.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://epsilon-singularlogic.atlassian.net/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://epsilon-singularlogic.atlassian.net/*"
+      ],
+      "js": [
+        "content_start.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://epsilon-singularlogic.atlassian.net/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "sidebar.css"
+      ],
+      "run_at": "document_end"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "sidebar.html",
+        "sidebar.css",
+        "canned_responses.json"
+      ],
+      "matches": [
+        "https://epsilon-singularlogic.atlassian.net/*"
+      ]
+    }
+  ]
+}

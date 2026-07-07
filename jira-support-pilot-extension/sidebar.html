@@ -1,0 +1,198 @@
+<div id="support-pilot-container" class="support-pilot-sidebar closed">
+  <!-- Close Button -->
+  <button id="support-pilot-close" class="pilot-close-btn">&times;</button>
+  
+  <!-- Header -->
+  <div class="pilot-header">
+    <div class="pilot-logo">🚀</div>
+    <div class="pilot-title-group">
+      <span class="pilot-title">Support Pilot</span>
+      <span class="pilot-subtitle">NSS Jira Copilot v1.0</span>
+    </div>
+    <button id="support-pilot-refresh" class="pilot-refresh-btn" title="Refresh Ticket Data">🔄</button>
+  </div>
+
+  <!-- Tabs Nav -->
+  <div class="pilot-tabs">
+    <button class="pilot-tab-btn active" data-tab="time-tab">🕒 Time Log</button>
+    <button class="pilot-tab-btn" data-tab="chat-tab">💬 Canned Msg</button>
+    <button class="pilot-tab-btn" data-tab="settings-tab">⚙️ Settings</button>
+  </div>
+
+  <!-- Tab Contents -->
+  <div class="pilot-tab-content active" id="time-tab">
+    <div class="pilot-issue-card">
+      <div id="time-issue-key" class="pilot-badge">Loading...</div>
+      <div id="time-issue-summary" class="pilot-issue-title">-</div>
+      <div class="pilot-meta-row">
+        <span class="pilot-meta-label">Partner:</span>
+        <span id="time-issue-partner" class="pilot-meta-value">-</span>
+      </div>
+      <div class="pilot-meta-row">
+        <span class="pilot-meta-label">LSP Cust:</span>
+        <span id="time-issue-lsp" class="pilot-meta-value">-</span>
+      </div>
+    </div>
+
+    <!-- Child Selection -->
+    <div class="pilot-form-group">
+      <label for="time-child-select">Log hours under Child Issue:</label>
+      <select id="time-child-select" class="pilot-select">
+        <option value="">Fetching children...</option>
+      </select>
+      <button id="time-create-child" class="pilot-btn pilot-btn-sec hide">➕ Create Service Child</button>
+    </div>
+
+    <!-- Duration -->
+    <div class="pilot-form-group">
+      <label>Duration:</label>
+      <div style="display: flex; gap: 10px; align-items: center;">
+        <div style="flex: 1; display: flex; align-items: center; gap: 6px;">
+          <input type="number" id="time-hours" class="pilot-input" min="0" placeholder="0" style="text-align: center;">
+          <span style="color: #8993a4; font-size: 13px; font-weight: 500;">h</span>
+        </div>
+        <div style="flex: 1; display: flex; align-items: center; gap: 6px;">
+          <input type="number" id="time-minutes" class="pilot-input" min="0" max="59" placeholder="0" style="text-align: center;">
+          <span style="color: #8993a4; font-size: 13px; font-weight: 500;">m</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Comment -->
+    <div class="pilot-form-group">
+      <label for="time-comment">Worklog Comment (Optional):</label>
+      <textarea id="time-comment" class="pilot-textarea" rows="3" placeholder="Brief description of work done..."></textarea>
+    </div>
+
+    <!-- Time Type Selection -->
+    <div class="pilot-form-group">
+      <label for="time-type-select">Time Type:</label>
+      <select id="time-type-select" class="pilot-select">
+        <option value="20910">Analysis</option>
+        <option value="20911" selected>Support</option>
+        <option value="20912">Implementation</option>
+        <option value="20913">Development – Coding</option>
+        <option value="20914">Documentation</option>
+        <option value="22189">Estimation & FRD</option>
+        <option value="22190">Presales Consulting</option>
+        <option value="20915">Presales – Demo</option>
+        <option value="20916">Test</option>
+        <option value="20917">Prototype</option>
+        <option value="20918">Training</option>
+        <option value="20919">Personal</option>
+      </select>
+    </div>
+
+    <!-- Charge Type Selection -->
+    <div class="pilot-form-group">
+      <label for="time-charge-select">Charge Type:</label>
+      <select id="time-charge-select" class="pilot-select">
+        <option value="Billable">Billable</option>
+        <option value="Non Billable" selected>Non Billable</option>
+      </select>
+    </div>
+
+    <!-- Defaults Info -->
+    <div class="pilot-defaults-box">
+      <div class="pilot-default-item">
+        <span>Inherited Component:</span> <strong id="time-default-component">-</strong>
+      </div>
+    </div>
+
+    <!-- Action -->
+    <button id="time-submit-btn" class="pilot-btn pilot-btn-primary">🕒 Log Time</button>
+    <div id="time-status" class="pilot-status-msg"></div>
+  </div>
+
+  <div class="pilot-tab-content" id="chat-tab">
+    <div class="pilot-issue-card">
+      <div id="chat-issue-key" class="pilot-badge">Loading...</div>
+      <div id="chat-issue-summary" class="pilot-issue-title">-</div>
+    </div>
+
+    <!-- Canned Response Select -->
+    <div class="pilot-form-group">
+      <label for="chat-canned-select">Select Canned Response:</label>
+      <select id="chat-canned-select" class="pilot-select">
+        <option value="">Choose a template...</option>
+      </select>
+    </div>
+
+    <!-- Edit/Send Area -->
+    <div class="pilot-form-group">
+      <label for="chat-text-preview">Message Preview (editable):</label>
+      <textarea id="chat-text-preview" class="pilot-textarea" rows="8" placeholder="Select a template or write a custom message..."></textarea>
+    </div>
+
+    <!-- Live Rendered Markdown Preview -->
+    <div class="pilot-form-group">
+      <label>Live Rendered Markdown Preview:</label>
+      <div id="chat-markdown-preview" class="pilot-markdown-preview"><em>Select a template or write a custom message to see preview...</em></div>
+    </div>
+
+    <!-- Actions -->
+    <div class="pilot-form-group" style="display: flex; flex-direction: column; gap: 8px; margin-top: 15px;">
+      <button id="chat-insert-btn" class="pilot-btn pilot-btn-primary" style="width: 100%;">
+        📋 Copy & Insert to JIRA
+      </button>
+      <button id="chat-submit-btn" class="pilot-btn pilot-btn-sec" style="width: 100%; font-size: 11px; padding: 6px;">
+        💬 Send Direct Comment (as yourself)
+      </button>
+    </div>
+    <div id="chat-status" class="pilot-status-msg"></div>
+  </div>
+
+  <div class="pilot-tab-content" id="settings-tab">
+    <div class="pilot-form-group">
+      <label for="settings-email">Jira Account Email:</label>
+      <input type="email" id="settings-email" class="pilot-input" placeholder="e.g. name@epsilonnet.gr">
+    </div>
+
+    <div class="pilot-form-group">
+      <label for="settings-token">Jira API Token:</label>
+      <div class="pilot-input-password-wrapper">
+        <input type="password" id="settings-token" class="pilot-input" placeholder="Paste your API token here...">
+        <button id="settings-token-toggle" class="pilot-pw-toggle">👁️</button>
+      </div>
+      <small class="pilot-help-text">Generate a token at <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank">id.atlassian.com</a></small>
+    </div>
+
+    <button id="settings-save-btn" class="pilot-btn pilot-btn-primary">💾 Save Settings</button>
+    <div id="settings-status" class="pilot-status-msg"></div>
+
+    <!-- Expandable API Token Instructions -->
+    <div class="pilot-accordion" style="margin-top: 15px;">
+      <div class="pilot-accordion-header" id="instructions-accordion-header">
+        <span>📖 How to generate a Jira API Token?</span>
+        <span class="pilot-accordion-icon">▶</span>
+      </div>
+      <div class="pilot-accordion-content hide" id="instructions-accordion-content">
+        <ol style="margin: 0; padding-left: 15px; line-height: 1.4; font-size: 11px; color: #8993a4;">
+          <li style="margin-bottom: 5px;">
+            Go to <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" style="color: #00b8d9; text-decoration: underline;">Atlassian Security Settings</a>.
+          </li>
+          <li style="margin-bottom: 5px;">
+            Log in with your corporate account (e.g., <strong>username@epsilonnet.gr</strong>).
+          </li>
+          <li style="margin-bottom: 5px;">
+            Click <strong>"Create API token"</strong>.
+          </li>
+          <li style="margin-bottom: 5px;">
+            Label it (e.g., <code>Jira Support Pilot</code>) and click <strong>"Create"</strong>.
+          </li>
+          <li style="margin-bottom: 5px;">
+            Click <strong>"Copy"</strong> to copy the token.
+          </li>
+          <li>
+            Paste the token in the input field above and click <strong>"Save Settings"</strong>.
+          </li>
+        </ol>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Floating Toggle Button -->
+<button id="support-pilot-toggle" class="support-pilot-float-btn">
+  🚀
+</button>
