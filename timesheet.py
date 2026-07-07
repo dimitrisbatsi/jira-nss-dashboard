@@ -4302,10 +4302,10 @@ def show_reviewer_queue(current_user_id):
                 with engine.connect() as conn:
                     orig_row = conn.execute(
                         text("SELECT CategoryID, QuestionType, QuestionText, OptionsJSON, Points, Active FROM CM_Questions_Original WHERE QuestionID = :id"),
-                        {"id": sel_rev_id}
+                        {"id": int(sel_rev_id)}
                     ).fetchone()
-            except Exception:
-                pass
+            except Exception as e_rev:
+                print(f"[DEBUG] Failed to load original row in reviewer queue: {e_rev}")
                 
         if orig_row:
             with st.expander("👀 Σύγκριση Αλλαγών με την Αρχική Ερώτηση (Diff)"):
@@ -4574,9 +4574,9 @@ def edit_question_dialog(q_row, categories_df, users_map, can_manage):
             num_options = 2
         else:
             num_options = st.number_input(
-                "Πλήθος Επιλογών Απαντήσεων (2-6):", 
+                "Πλήθος Επιλογών Απαντήσεων (2-10):", 
                 min_value=2, 
-                max_value=6, 
+                max_value=10, 
                 value=int(len(st.session_state[session_key])),
                 key=f"dialog_num_opts_{question_id}"
             )
@@ -4662,8 +4662,8 @@ def process_excel_import(uploaded_file, engine):
                 except ValueError:
                     is_new = True
                     
-            # Build OptionsJSON from Option_A..F
-            alphabet = ["A", "B", "C", "D", "E", "F"]
+            # Build OptionsJSON from Option_A..J
+            alphabet = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
             options_list = []
             for char in alphabet:
                 opt_text = row_item.get(f"Option_{char}")
@@ -4849,8 +4849,8 @@ def show_classmarker_questions(can_edit, can_manage):
         # Prepare export dataframe
         export_df = filtered_qs.copy() if not filtered_qs.empty else questions_df.copy()
         
-        # Add Option columns A to F and Option_X_Correct
-        alphabet = ["A", "B", "C", "D", "E", "F"]
+        # Add Option columns A to J and Option_X_Correct
+        alphabet = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
         for char in alphabet:
             export_df[f"Option_{char}"] = ""
             export_df[f"Option_{char}_Correct"] = 0
@@ -4859,7 +4859,7 @@ def show_classmarker_questions(can_edit, can_manage):
             try:
                 opts = json.loads(row_item["OptionsJSON"]) if row_item["OptionsJSON"] else []
                 for o_idx, opt in enumerate(opts):
-                    if o_idx < 6:
+                    if o_idx < 10:
                         char = alphabet[o_idx]
                         export_df.at[idx, f"Option_{char}"] = opt.get("text", "")
                         export_df.at[idx, f"Option_{char}_Correct"] = 1 if opt.get("correct") else 0
@@ -4874,7 +4874,11 @@ def show_classmarker_questions(can_edit, can_manage):
             "Option_C", "Option_C_Correct",
             "Option_D", "Option_D_Correct",
             "Option_E", "Option_E_Correct",
-            "Option_F", "Option_F_Correct"
+            "Option_F", "Option_F_Correct",
+            "Option_G", "Option_G_Correct",
+            "Option_H", "Option_H_Correct",
+            "Option_I", "Option_I_Correct",
+            "Option_J", "Option_J_Correct"
         ]
         cols_to_export = [c for c in cols_to_export if c in export_df.columns]
         final_export_df = export_df[cols_to_export]
@@ -4911,8 +4915,8 @@ def show_classmarker_questions(can_edit, can_manage):
             * **`Active`**: Κατάσταση ερώτησης. Τιμές: `1` (Ενεργή), `0` (Απενεργοποιημένη).
             
             #### 📝 Στήλες Απαντήσεων (Πολλαπλής Επιλογής)
-            * **`Option_A`** έως **`Option_F`**: Το κείμενο της κάθε επιλογής απάντησης (έως 6 επιλογές).
-            * **`Option_A_Correct`** έως **`Option_F_Correct`**: Δείκτης σωστής απάντησης. Τιμές: `1` (Σωστό), `0` (Λάθος).
+            * **`Option_A`** έως **`Option_J`**: Το κείμενο της κάθε επιλογής απάντησης (έως 10 επιλογές).
+            * **`Option_A_Correct`** έως **`Option_J_Correct`**: Δείκτης σωστής απάντησης. Τιμές: `1` (Σωστό), `0` (Λάθος).
             
             #### ❓ Διαθέσιμοι Τύποι Ερωτήσεων (στήλη `QuestionType`)
             Οι τύποι ερωτήσεων που υποστηρίζει το ClassMarker είναι:
@@ -5066,10 +5070,10 @@ def show_classmarker_questions(can_edit, can_manage):
                 with engine.connect() as conn:
                     orig_row = conn.execute(
                         text("SELECT CategoryID, QuestionType, QuestionText, OptionsJSON, Points, Active FROM CM_Questions_Original WHERE QuestionID = :id"),
-                        {"id": selected_q_id}
+                        {"id": int(selected_q_id)}
                     ).fetchone()
-            except Exception:
-                pass
+            except Exception as e_q:
+                print(f"[DEBUG] Failed to load original row in questions bank: {e_q}")
                 
         if orig_row:
             with st.expander("👀 Σύγκριση Αλλαγών με την Αρχική Ερώτηση (Diff)"):
