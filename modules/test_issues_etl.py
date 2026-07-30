@@ -283,7 +283,7 @@ def get_dynamic_jira_fields(csv_filename: str = "jira_custom_fields.csv"):
         "summary", "project", "issuetype", "priority", "status", "created", 
         "updated", "resolutiondate", "reporter", "assignee", "components", 
         "worklog", "comment", "customfield_10194", "customfield_10662", 
-        "customfield_11182", "customfield_10860", "customfield_10553"
+        "customfield_11182", "customfield_10860", "customfield_10553", "labels"
     ]
     
     cf_list = []

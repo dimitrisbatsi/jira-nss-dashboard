@@ -7,7 +7,7 @@
     <div class="pilot-logo">🚀</div>
     <div class="pilot-title-group">
       <span class="pilot-title">Support Pilot</span>
-      <span class="pilot-subtitle">NSS Jira Copilot v1.0</span>
+      <span class="pilot-subtitle">NSS Jira Copilot v1.3</span>
     </div>
     <button id="support-pilot-refresh" class="pilot-refresh-btn" title="Refresh Ticket Data">🔄</button>
   </div>
@@ -68,19 +68,9 @@
     <div class="pilot-form-group">
       <label for="time-type-select">Time Type:</label>
       <select id="time-type-select" class="pilot-select">
-        <option value="20910">Analysis</option>
-        <option value="20911" selected>Support</option>
-        <option value="20912">Implementation</option>
-        <option value="20913">Development – Coding</option>
-        <option value="20914">Documentation</option>
-        <option value="22189">Estimation & FRD</option>
-        <option value="22190">Presales Consulting</option>
-        <option value="20915">Presales – Demo</option>
-        <option value="20916">Test</option>
-        <option value="20917">Prototype</option>
-        <option value="20918">Training</option>
-        <option value="20919">Personal</option>
+        <option value="">Select Time Type...</option>
       </select>
+      <div id="time-type-description" style="margin-top: 5px; font-size: 11px; color: #00b8d9; line-height: 1.35; font-style: italic; background: rgba(0, 184, 217, 0.05); border-left: 2px solid #00b8d9; padding: 4px 8px; border-radius: 2px; display: none;"></div>
     </div>
 
     <!-- Charge Type Selection -->
@@ -105,41 +95,83 @@
   </div>
 
   <div class="pilot-tab-content" id="chat-tab">
-    <div class="pilot-issue-card">
-      <div id="chat-issue-key" class="pilot-badge">Loading...</div>
-      <div id="chat-issue-summary" class="pilot-issue-title">-</div>
+    <!-- Chat Default View -->
+    <div id="chat-default-view">
+      <div class="pilot-issue-card">
+        <div id="chat-issue-key" class="pilot-badge">Loading...</div>
+        <div id="chat-issue-summary" class="pilot-issue-title">-</div>
+      </div>
+
+      <!-- Canned Response Select -->
+      <div class="pilot-form-group">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+          <label for="chat-canned-select" style="margin-bottom: 0;">Select Canned Response:</label>
+          <button id="canned-rebuild-btn" class="pilot-btn-link" style="font-size: 11px; color: #00b8d9; background: none; border: none; cursor: pointer; text-decoration: underline; padding: 0;">🛠 Rebuild Guide</button>
+        </div>
+        <select id="chat-canned-select" class="pilot-select">
+          <option value="">Choose a template...</option>
+        </select>
+        
+        <!-- Manage Custom Templates Buttons -->
+        <div style="display: flex; gap: 8px; margin-top: 6px;">
+          <button id="canned-new-btn" class="pilot-btn pilot-btn-sec" style="flex: 1; padding: 4px 8px; font-size: 11px;">➕ New</button>
+          <button id="canned-edit-btn" class="pilot-btn pilot-btn-sec hide" style="flex: 1; padding: 4px 8px; font-size: 11px;">✏ Edit</button>
+          <button id="canned-delete-btn" class="pilot-btn pilot-btn-sec hide" style="flex: 1; padding: 4px 8px; font-size: 11px; background: rgba(255, 74, 74, 0.1); border-color: rgba(255, 74, 74, 0.3); color: #ff4a4a;">❌ Delete</button>
+        </div>
+        
+        <!-- Rebuild info card (hidden by default) -->
+        <div id="canned-rebuild-info" class="pilot-defaults-box hide" style="margin-top: 8px; font-size: 11px; line-height: 1.4; border-color: rgba(0, 184, 217, 0.3); background: rgba(0, 184, 217, 0.05); padding: 8px;">
+          <strong style="color: #deebff; display: block; margin-bottom: 4px;">📂 How to add files directly:</strong>
+          1. Open the extension folder on your PC.<br>
+          2. Put your personal MD files inside the <strong>canned_responses/custom/</strong> subfolder.<br>
+          3. Double-click <strong>rebuild_templates.bat</strong> inside the extension folder.<br>
+          4. Reload the extension in Chrome!
+        </div>
+      </div>
+
+      <!-- Edit/Send Area -->
+      <div class="pilot-form-group">
+        <label for="chat-text-preview">Message Preview (editable):</label>
+        <textarea id="chat-text-preview" class="pilot-textarea" rows="8" placeholder="Select a template or write a custom message..."></textarea>
+      </div>
+
+      <!-- Live Rendered Markdown Preview -->
+      <div class="pilot-form-group">
+        <label>Live Rendered Markdown Preview:</label>
+        <div id="chat-markdown-preview" class="pilot-markdown-preview"><em>Select a template or write a custom message to see preview...</em></div>
+      </div>
+
+      <!-- Actions -->
+      <div class="pilot-form-group" style="display: flex; flex-direction: column; gap: 8px; margin-top: 15px;">
+        <button id="chat-insert-btn" class="pilot-btn pilot-btn-primary" style="width: 100%;">
+          📋 Copy & Insert to JIRA
+        </button>
+        <button id="chat-submit-btn" class="pilot-btn pilot-btn-sec" style="width: 100%; font-size: 11px; padding: 6px;">
+          💬 Send Direct Comment (as yourself)
+        </button>
+      </div>
+      <div id="chat-status" class="pilot-status-msg"></div>
     </div>
 
-    <!-- Canned Response Select -->
-    <div class="pilot-form-group">
-      <label for="chat-canned-select">Select Canned Response:</label>
-      <select id="chat-canned-select" class="pilot-select">
-        <option value="">Choose a template...</option>
-      </select>
+    <!-- Template Editor View (hidden by default) -->
+    <div id="chat-editor-view" class="hide" style="display: flex; flex-direction: column; gap: 12px; margin-top: 10px;">
+      <h3 style="margin: 0; font-size: 13px; color: #deebff; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 6px;" id="editor-view-title">Create Custom Template</h3>
+      
+      <div class="pilot-form-group">
+        <label for="editor-template-title">Template Title:</label>
+        <input type="text" id="editor-template-title" class="pilot-input" placeholder="e.g. My Custom Greeting">
+      </div>
+      
+      <div class="pilot-form-group">
+        <label for="editor-template-body">Template Content (Markdown):</label>
+        <textarea id="editor-template-body" class="pilot-textarea" rows="10" placeholder="Type your template text here. You can use markdown and placeholders like {partnerName}, {contactName}, etc..."></textarea>
+      </div>
+      
+      <div style="display: flex; gap: 8px; margin-top: 5px;">
+        <button id="editor-save-btn" class="pilot-btn pilot-btn-primary" style="flex: 1;">💾 Save</button>
+        <button id="editor-cancel-btn" class="pilot-btn pilot-btn-sec" style="flex: 1;">Cancel</button>
+      </div>
     </div>
-
-    <!-- Edit/Send Area -->
-    <div class="pilot-form-group">
-      <label for="chat-text-preview">Message Preview (editable):</label>
-      <textarea id="chat-text-preview" class="pilot-textarea" rows="8" placeholder="Select a template or write a custom message..."></textarea>
-    </div>
-
-    <!-- Live Rendered Markdown Preview -->
-    <div class="pilot-form-group">
-      <label>Live Rendered Markdown Preview:</label>
-      <div id="chat-markdown-preview" class="pilot-markdown-preview"><em>Select a template or write a custom message to see preview...</em></div>
-    </div>
-
-    <!-- Actions -->
-    <div class="pilot-form-group" style="display: flex; flex-direction: column; gap: 8px; margin-top: 15px;">
-      <button id="chat-insert-btn" class="pilot-btn pilot-btn-primary" style="width: 100%;">
-        📋 Copy & Insert to JIRA
-      </button>
-      <button id="chat-submit-btn" class="pilot-btn pilot-btn-sec" style="width: 100%; font-size: 11px; padding: 6px;">
-        💬 Send Direct Comment (as yourself)
-      </button>
-    </div>
-    <div id="chat-status" class="pilot-status-msg"></div>
   </div>
 
   <div class="pilot-tab-content" id="settings-tab">

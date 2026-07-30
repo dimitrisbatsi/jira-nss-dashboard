@@ -19,7 +19,7 @@ from modules.test_users_etl import run_users_etl, run_jira_users_etl
 from modules.test_components_etl import run_components_etl, run_jira_components_etl
 from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl
 
-APP_VERSION = "26.7.1b (2026-07-02)"
+APP_VERSION = "26.7.1c (2026-07-07)"
 
 # --- Helper function to parse ClassMarker BBCode to Markdown ---
 def parse_cm_bbcode(text_val):

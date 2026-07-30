@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Jira Support Pilot",
-  "version": "1.0.0",
+  "version": "1.3",
   "description": "Chrome/Edge extension to simplify timesheet logging and client communication on Jira Cloud.",
   "permissions": [
     "storage"

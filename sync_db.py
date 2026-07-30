@@ -134,7 +134,7 @@ page_token = ""
 max_results = 100 # Το επαναφέρουμε στο 100 (όχι 2) για ταχύτητα!
 total_issues = 0
 
-jql = 'project IN (PYLCOM, PYLFLE, GLXENT, ESLKAS, PYLACC, PYLHOS, ESLLEG, CLCNTR, PLINTS) AND issuetype = "Time Type" AND (status = "Time Entered" OR status = "Time-Entered")'
+jql = 'project IN (PYLCOM, PYLFLE, GLXENT, ESLKAS, PYLACC, PYLHOS, ESLLEG, CLCNTR, PLINTS, PYFLDR) AND issuetype = "Time Type" AND (status = "Time Entered" OR status = "Time-Entered")'
 
 if SYNC_MODE == "incremental":
     jql += f' AND updated >= -{LOOKBACK_DAYS}d'

@@ -7,6 +7,156 @@
   let credentials = null;
   let currentUserAccountId = null;
   let currentIsEpic = false;
+  let currentEditingCustomIndex = -1;
+  let editorMode = 'new'; // 'new' or 'edit'
+
+  const TIME_TYPES_DATA = [
+    {
+      name: 'Support',
+      desc: 'Διαχείριση αιτήματος, απάντηση, καθοδήγηση συνεργάτη — η κύρια δραστηριότητα',
+      appliesTo: ['epic']
+    },
+    {
+      name: 'Analysis',
+      desc: 'Pre-implementation activity — όταν το αποτέλεσμα πάει σε enhancement ή πρόταση παραμετροποίησης από Support / Solution Design',
+      appliesTo: ['epic', 'internal']
+    },
+    {
+      name: 'Investigation',
+      desc: 'Έρευνα αν ισχύει κάτι (bug), μελέτη παραμέτρων, αναπαραγωγή σεναρίου χωρίς επικοινωνία με συνεργάτη — manual, wiki, knowledge base, αναπαραγωγή',
+      appliesTo: ['epic', 'internal']
+    },
+    {
+      name: 'Test',
+      desc: 'Ready to test / Έλεγχος νέας έκδοσης — αφορά ΜΟΝΟ ό,τι έρχεται από την παραγωγή για έλεγχο ορθότητας',
+      appliesTo: ['epic', 'internal']
+    },
+    {
+      name: 'Implementation',
+      desc: 'Παραμετροποίηση, setup, configuration και υλοποίηση στο σύστημα του συνεργάτη — flex / direct',
+      appliesTo: ['epic', 'internal']
+    },
+    {
+      name: 'Phone Support',
+      desc: 'Υποστήριξη μέσω τηλεφώνου / Αφορά υποδοχή αιτημάτων συνεργάτη μέσω τηλεφώνου.',
+      appliesTo: ['epic']
+    },
+    {
+      name: 'Training',
+      desc: 'Εκπαίδευση συνεργάτη ή χρήστη βάσει συμφωνίας',
+      appliesTo: ['epic']
+    },
+    {
+      name: 'Documentation',
+      desc: 'Καταγραφή οδηγιών / manual / Q&A',
+      appliesTo: ['internal']
+    },
+    {
+      name: 'Presales / Demo',
+      desc: 'Παρουσιάσεις, demo σε πιθανό πελάτη — αφορά presales διαδικασία',
+      appliesTo: ['epic', 'internal']
+    },
+    {
+      name: 'Prototype',
+      desc: 'Εργασίες στην πρότυπη βάση (prototype / sandbox environment)',
+      appliesTo: ['internal']
+    },
+    {
+      name: 'Complaint Handling',
+      desc: 'Διαχείριση παραπόνου',
+      appliesTo: ['epic']
+    },
+    {
+      name: 'Internal Communication',
+      desc: 'Επικοινωνία με συναδέλφους, ερώτηση σε 3rd level, εσωτερικός συντονισμός',
+      appliesTo: ['epic', 'internal']
+    },
+    {
+      name: 'Internal Meetings',
+      desc: 'Team meetings, σχεδιασμός επόμενων βημάτων, planning, alignment ομάδας',
+      appliesTo: ['epic', 'internal']
+    },
+    {
+      name: 'Mentoring / Escalation (Giving)',
+      desc: 'Καθοδήγηση που δίνει 3rd level ή senior σε ανοιχτό ticket άλλου consultant',
+      appliesTo: ['epic']
+    },
+    {
+      name: 'Mentoring / Escalation (Receiving)',
+      desc: 'Χρόνος που αφιερώνει ο consultant για να λάβει καθοδήγηση / escalation πάνω στο δικό του ticket',
+      appliesTo: ['epic']
+    },
+    {
+      name: 'Trainer / Εκπαιδευτής',
+      desc: 'Εσωτερικές εκπαιδεύσεις — ο consultant ως εισηγητής',
+      appliesTo: ['internal']
+    },
+    {
+      name: 'Trainee / Εκπαιδευόμενος',
+      desc: 'Εσωτερικές εκπαιδεύσεις — ο consultant ως εκπαιδευόμενος',
+      appliesTo: ['internal']
+    },
+    {
+      name: 'Personal',
+      desc: 'Προσωπικός χρόνος, διάλειμμα',
+      appliesTo: ['internal']
+    },
+    {
+      name: 'Routing',
+      desc: 'Χρόνος που αναλώνεται για τον διαμοιρασμό των αιτημάτων',
+      appliesTo: ['internal']
+    },
+    {
+      name: 'Other',
+      desc: 'Εάν δεν καλύπτεται καμία από τις παραπάνω',
+      appliesTo: ['internal']
+    },
+    {
+      name: 'Admin',
+      desc: 'Διοικητικές / διαδικαστικές εργασίες',
+      appliesTo: ['internal']
+    }
+  ];
+
+  function populateTimeTypesSelect(projKey) {
+    if (!shadowRoot) return;
+    const select = shadowRoot.getElementById('time-type-select');
+    const descDiv = shadowRoot.getElementById('time-type-description');
+    if (!select) return;
+
+    const isInternal = (projKey || '').toUpperCase() === 'PLINTS';
+    const targetTag = isInternal ? 'internal' : 'epic';
+
+    const filtered = TIME_TYPES_DATA.filter(t => t.appliesTo.includes(targetTag));
+
+    select.innerHTML = '';
+    filtered.forEach((t, idx) => {
+      const opt = document.createElement('option');
+      opt.value = t.name;
+      opt.textContent = t.name;
+      if (idx === 0) opt.selected = true;
+      select.appendChild(opt);
+    });
+
+    const updateDescription = () => {
+      const selectedVal = select.value;
+      const found = TIME_TYPES_DATA.find(t => t.name === selectedVal);
+      if (found && found.desc && descDiv) {
+        descDiv.textContent = found.desc;
+        descDiv.style.display = 'block';
+      } else if (descDiv) {
+        descDiv.style.display = 'none';
+        descDiv.textContent = '';
+      }
+    };
+
+    select.onchange = updateDescription;
+    updateDescription();
+
+    if (select.updateCustomDisplay) {
+      select.updateCustomDisplay();
+    }
+  }
 
   // Poll for URL changes (Jira is an SPA)
   let lastUrl = location.href;
@@ -91,14 +241,29 @@
     return new Promise((resolve) => {
       try {
         chrome.runtime.sendMessage({ action: 'LOAD_CANNED_RESPONSES' }, (response) => {
+          let systemResponses = [];
           if (response && response.success) {
-            cachedCannedResponses = response.data;
-            populateCannedSelect();
-            resolve(true);
+            systemResponses = response.data || [];
           } else {
             console.error('Error loading canned responses from background:', response ? response.error : 'No response');
-            resolve(false);
           }
+          
+          // Load custom responses from local storage
+          chrome.storage.local.get(['customCannedResponses'], (result) => {
+            const customResponses = result.customCannedResponses || [];
+            
+            systemResponses.forEach(r => {
+              if (!r.category) r.category = 'System';
+            });
+            
+            customResponses.forEach(r => {
+              r.category = 'Custom';
+            });
+            
+            cachedCannedResponses = [...systemResponses, ...customResponses];
+            populateCannedSelect();
+            resolve(true);
+          });
         });
       } catch (e) {
         console.error('Error sending load canned responses message:', e);
@@ -159,9 +324,30 @@
     // Function to rebuild options list dynamically
     function rebuildOptions() {
       optionsContainer.innerHTML = '';
-      Array.from(selectEl.options).forEach(opt => {
+      
+      Array.from(selectEl.children).forEach(child => {
+        if (child.tagName.toUpperCase() === 'OPTGROUP') {
+          // Add group header
+          const groupHeader = document.createElement('div');
+          groupHeader.className = 'pilot-custom-select-group-header';
+          groupHeader.textContent = child.label;
+          optionsContainer.appendChild(groupHeader);
+          
+          // Add group options
+          Array.from(child.children).forEach(opt => {
+            createOptionItem(opt, true);
+          });
+        } else if (child.tagName.toUpperCase() === 'OPTION') {
+          createOptionItem(child, false);
+        }
+      });
+      
+      function createOptionItem(opt, isGrouped) {
         const item = document.createElement('div');
         item.className = 'pilot-custom-select-option';
+        if (isGrouped) {
+          item.classList.add('grouped');
+        }
         if (opt.value === selectEl.value) {
           item.classList.add('selected');
         }
@@ -184,7 +370,7 @@
         });
         
         optionsContainer.appendChild(item);
-      });
+      }
     }
     
     // Initial build
@@ -213,6 +399,9 @@
 
   // Set up click handlers and tabs inside shadow root
   function setupEventHandlers() {
+    // Populate initial Time Types
+    populateTimeTypesSelect('');
+
     // Convert native select elements into custom dropdown elements
     shadowRoot.querySelectorAll('select').forEach(transformSelectToCustom);
     
@@ -316,17 +505,178 @@
 
     cannedSelect.addEventListener('change', () => {
       const selectedIndex = cannedSelect.value;
+      const editBtn = shadowRoot.getElementById('canned-edit-btn');
+      const deleteBtn = shadowRoot.getElementById('canned-delete-btn');
       
       if (selectedIndex === '' || !cachedCannedResponses[selectedIndex]) {
         previewArea.value = '';
         markdownPreview.innerHTML = '<em>Select a template or write a custom message to see preview...</em>';
+        editBtn.classList.add('hide');
+        deleteBtn.classList.add('hide');
         return;
       }
       
-      const rawTemplate = cachedCannedResponses[selectedIndex].body;
+      const selectedResponse = cachedCannedResponses[selectedIndex];
+      if (selectedResponse.category === 'Custom') {
+        editBtn.classList.remove('hide');
+        deleteBtn.classList.remove('hide');
+      } else {
+        editBtn.classList.add('hide');
+        deleteBtn.classList.add('hide');
+      }
+      
+      const rawTemplate = selectedResponse.body;
       const parsedText = applyTemplatePlaceholders(rawTemplate);
       previewArea.value = parsedText;
       markdownPreview.innerHTML = renderMarkdownToHtml(parsedText);
+    });
+
+    // Canned responses rebuild instructions toggle
+    const rebuildBtn = shadowRoot.getElementById('canned-rebuild-btn');
+    const rebuildInfo = shadowRoot.getElementById('canned-rebuild-info');
+    if (rebuildBtn && rebuildInfo) {
+      rebuildBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        rebuildInfo.classList.toggle('hide');
+      });
+    }
+
+    // Canned responses Template Editor buttons
+    const cannedNewBtn = shadowRoot.getElementById('canned-new-btn');
+    const cannedEditBtn = shadowRoot.getElementById('canned-edit-btn');
+    const cannedDeleteBtn = shadowRoot.getElementById('canned-delete-btn');
+    const editorSaveBtn = shadowRoot.getElementById('editor-save-btn');
+    const editorCancelBtn = shadowRoot.getElementById('editor-cancel-btn');
+    const chatDefaultView = shadowRoot.getElementById('chat-default-view');
+    const chatEditorView = shadowRoot.getElementById('chat-editor-view');
+    const editorTitle = shadowRoot.getElementById('editor-view-title');
+    const editorTitleInput = shadowRoot.getElementById('editor-template-title');
+    const editorBodyInput = shadowRoot.getElementById('editor-template-body');
+
+    // Create New Custom Template
+    cannedNewBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      editorMode = 'new';
+      currentEditingCustomIndex = -1;
+      
+      editorTitle.textContent = 'Create Custom Template';
+      editorTitleInput.value = '';
+      editorBodyInput.value = '';
+      
+      chatDefaultView.classList.add('hide');
+      chatEditorView.classList.remove('hide');
+    });
+
+    // Edit Selected Custom Template
+    cannedEditBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const selectedIndex = cannedSelect.value;
+      if (selectedIndex === '' || !cachedCannedResponses[selectedIndex]) return;
+      
+      const selectedResponse = cachedCannedResponses[selectedIndex];
+      if (selectedResponse.category !== 'Custom') return;
+
+      editorMode = 'edit';
+      editorTitle.textContent = 'Edit Custom Template';
+      editorTitleInput.value = selectedResponse.title;
+      editorBodyInput.value = selectedResponse.body;
+
+      // Find index in customCannedResponses list to know which item to replace on Save
+      chrome.storage.local.get(['customCannedResponses'], (result) => {
+        const customList = result.customCannedResponses || [];
+        currentEditingCustomIndex = customList.findIndex(r => r.title === selectedResponse.title);
+        
+        chatDefaultView.classList.add('hide');
+        chatEditorView.classList.remove('hide');
+      });
+    });
+
+    // Delete Selected Custom Template
+    cannedDeleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const selectedIndex = cannedSelect.value;
+      if (selectedIndex === '' || !cachedCannedResponses[selectedIndex]) return;
+      
+      const selectedResponse = cachedCannedResponses[selectedIndex];
+      if (selectedResponse.category !== 'Custom') return;
+
+      if (!confirm(`Are you sure you want to delete "${selectedResponse.title}"?`)) {
+        return;
+      }
+
+      chrome.storage.local.get(['customCannedResponses'], (result) => {
+        let customList = result.customCannedResponses || [];
+        customList = customList.filter(r => r.title !== selectedResponse.title);
+        
+        chrome.storage.local.set({ customCannedResponses: customList }, async () => {
+          cannedSelect.value = '';
+          const event = new Event('change', { bubbles: true });
+          cannedSelect.dispatchEvent(event);
+          
+          await loadCannedResponses();
+        });
+      });
+    });
+
+    // Cancel editing
+    editorCancelBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      chatEditorView.classList.add('hide');
+      chatDefaultView.classList.remove('hide');
+    });
+
+    // Save template (Insert or Update)
+    editorSaveBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const title = editorTitleInput.value.trim();
+      const body = editorBodyInput.value.trim();
+      
+      if (!title || !body) {
+        alert('Please enter both Title and Template Content.');
+        return;
+      }
+
+      chrome.storage.local.get(['customCannedResponses'], (result) => {
+        const customList = result.customCannedResponses || [];
+        
+        if (editorMode === 'new') {
+          // Check for duplicate title
+          const titleExists = customList.some(r => r.title.toLowerCase() === title.toLowerCase());
+          if (titleExists) {
+            alert('A template with this title already exists. Please choose a unique title.');
+            return;
+          }
+          customList.push({ title, body, category: 'Custom' });
+        } else if (editorMode === 'edit') {
+          if (currentEditingCustomIndex > -1 && currentEditingCustomIndex < customList.length) {
+            // Check for duplicate title in other items
+            const titleExists = customList.some((r, idx) => idx !== currentEditingCustomIndex && r.title.toLowerCase() === title.toLowerCase());
+            if (titleExists) {
+              alert('Another template with this title already exists. Please choose a unique title.');
+              return;
+            }
+            customList[currentEditingCustomIndex] = { title, body, category: 'Custom' };
+          } else {
+            console.error('Invalid editing index:', currentEditingCustomIndex);
+            return;
+          }
+        }
+
+        chrome.storage.local.set({ customCannedResponses: customList }, async () => {
+          chatEditorView.classList.add('hide');
+          chatDefaultView.classList.remove('hide');
+          
+          await loadCannedResponses();
+          
+          // Try to select the saved template
+          const newIndex = cachedCannedResponses.findIndex(r => r.title === title);
+          if (newIndex > -1) {
+            cannedSelect.value = newIndex;
+            const event = new Event('change', { bubbles: true });
+            cannedSelect.dispatchEvent(event);
+          }
+        });
+      });
     });
 
     // Update markdown preview in real-time as user edits textarea
@@ -476,6 +826,62 @@
       */
     });
 
+    // Normalize strings for project-agnostic mapping (handles dashes, spacing, etc.)
+    function normalizeString(s) {
+      if (!s) return '';
+      return s.replace(/[^a-zA-Z0-9\u0370-\u03ff\u1f00-\u1fff]/g, '').toLowerCase();
+    }
+
+    // Fetch allowed values context for customfield_10553 dynamically
+    async function fetchAllowedTimeTypes(projKey) {
+      // Attempt 1: Call JIRA Cloud V3 /issue/createmeta endpoint
+      try {
+        const url = `/rest/api/3/issue/createmeta?projectKeys=${projKey}&issuetypeNames=Time Type&expand=projects.issuetypes.fields`;
+        const res = await callJiraApi(url, 'GET');
+        if (res.success && res.data && res.data.projects && res.data.projects.length > 0) {
+          const proj = res.data.projects[0];
+          if (proj.issuetypes && proj.issuetypes.length > 0) {
+            const it = proj.issuetypes[0];
+            if (it.fields && it.fields.customfield_10553) {
+              const field = it.fields.customfield_10553;
+              if (field.allowedValues) {
+                return field.allowedValues; // Array of { id, value }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to fetch via createmeta query parameter version:', e);
+      }
+      
+      // Attempt 2: Fallback to querying all issue types for the project to find the ID of "Time Type"
+      try {
+        const projMetaRes = await callJiraApi(`/rest/api/3/project/${projKey}`, 'GET');
+        if (projMetaRes.success && projMetaRes.data) {
+          const projectId = projMetaRes.data.id;
+          const issueTypesRes = await callJiraApi(`/rest/api/3/issuetype`, 'GET');
+          if (issueTypesRes.success && Array.isArray(issueTypesRes.data)) {
+            const timeTypeObj = issueTypesRes.data.find(t => t.name.toLowerCase() === 'time type');
+            if (timeTypeObj) {
+              const issueTypeId = timeTypeObj.id;
+              const contextUrl = `/rest/api/3/issue/createmeta/${projKey}/issuetypes/${issueTypeId}`;
+              const metaRes = await callJiraApi(contextUrl, 'GET');
+              if (metaRes.success && metaRes.data && metaRes.data.fields && metaRes.data.fields.customfield_10553) {
+                const field = metaRes.data.fields.customfield_10553;
+                if (field.allowedValues) {
+                  return field.allowedValues;
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to fetch via project issue type path:', e);
+      }
+
+      return null;
+    }
+
     // Time Log Submit Action
     const timeSubmitBtn = shadowRoot.getElementById('time-submit-btn');
     timeSubmitBtn.addEventListener('click', async () => {
@@ -533,13 +939,34 @@
         const selectedTimeType = shadowRoot.getElementById('time-type-select').value;
         const selectedChargeType = shadowRoot.getElementById('time-charge-select').value;
 
+        // Fetch allowed values dynamically for this project context
+        let customFieldVal = { value: selectedTimeType }; // Default fallback
+        try {
+          const allowedValues = await fetchAllowedTimeTypes(projKey);
+          if (allowedValues && allowedValues.length > 0) {
+            const normSelected = normalizeString(selectedTimeType);
+            const matchedOption = allowedValues.find(opt => normalizeString(opt.value) === normSelected);
+            if (matchedOption) {
+              customFieldVal = { id: matchedOption.id };
+            } else {
+              // Try substring matching
+              const partialMatch = allowedValues.find(opt => normalizeString(opt.value).includes(normSelected) || normSelected.includes(normalizeString(opt.value)));
+              if (partialMatch) {
+                customFieldVal = { id: partialMatch.id };
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to match time types dynamically:', e);
+        }
+
         const createSubtaskPayload = {
           fields: {
             project: { key: projKey },
             parent: { key: selectedChildKey },
             summary: comment || 'Time Entry via Support Pilot',
             issuetype: { name: 'Time Type' }, // Set sub-task type to "Time Type"
-            customfield_10553: { id: selectedTimeType }, // Time Types
+            customfield_10553: customFieldVal, // Time Types (context-resolved ID or value fallback)
             customfield_10193: { value: selectedChargeType } // Charge Type
           }
         };
@@ -724,22 +1151,37 @@
     return el && el.classList.contains('open');
   }
 
+  function safeSetTextContent(id, text) {
+    if (!shadowRoot) return;
+    const el = shadowRoot.getElementById(id);
+    if (el) {
+      el.textContent = text;
+    }
+  }
+
   function resetUI() {
-    shadowRoot.getElementById('time-issue-key').textContent = currentIssueKey || 'No Active Issue';
-    shadowRoot.getElementById('time-issue-summary').textContent = '-';
-    shadowRoot.getElementById('time-issue-partner').textContent = '-';
-    shadowRoot.getElementById('time-issue-lsp').textContent = '-';
-    shadowRoot.getElementById('time-default-component').textContent = '-';
+    safeSetTextContent('time-issue-key', currentIssueKey || 'No Active Issue');
+    safeSetTextContent('time-issue-summary', '-');
+    safeSetTextContent('time-issue-partner', '-');
+    safeSetTextContent('time-issue-lsp', '-');
+    safeSetTextContent('time-default-component', '-');
     
-    shadowRoot.getElementById('chat-issue-key').textContent = currentIssueKey || 'No Active Issue';
-    shadowRoot.getElementById('chat-issue-summary').textContent = '-';
+    safeSetTextContent('chat-issue-key', currentIssueKey || 'No Active Issue');
+    safeSetTextContent('chat-issue-summary', '-');
     
     // Clear selections
-    const childSelect = shadowRoot.getElementById('time-child-select');
-    childSelect.innerHTML = '<option value="">Choose child...</option>';
-    if (childSelect.updateCustomDisplay) childSelect.updateCustomDisplay();
+    const childSelect = shadowRoot ? shadowRoot.getElementById('time-child-select') : null;
+    if (childSelect) {
+      childSelect.innerHTML = '<option value="">Choose child...</option>';
+      if (childSelect.updateCustomDisplay) childSelect.updateCustomDisplay();
+    }
     
-    shadowRoot.getElementById('time-create-child').classList.add('hide');
+    const timeCreateChild = shadowRoot ? shadowRoot.getElementById('time-create-child') : null;
+    if (timeCreateChild) {
+      timeCreateChild.classList.add('hide');
+    }
+
+    populateTimeTypesSelect('');
   }
 
   // Formatting helper for custom fields that might be objects
@@ -755,7 +1197,8 @@
   async function refreshActiveIssue() {
     if (!currentIssueKey) return;
     if (!credentials) {
-      showStatus(shadowRoot.getElementById('time-status'), 'Credentials not configured. Go to Settings.', 'error');
+      const timeStatus = shadowRoot ? shadowRoot.getElementById('time-status') : null;
+      if (timeStatus) showStatus(timeStatus, 'Credentials not configured. Go to Settings.', 'error');
       return;
     }
 
@@ -772,29 +1215,35 @@
           ? currentIssueData.fields.components[0].name 
           : 'None';
 
-        shadowRoot.getElementById('time-issue-key').textContent = currentIssueKey;
-        shadowRoot.getElementById('time-issue-summary').textContent = summary;
-        shadowRoot.getElementById('time-issue-partner').textContent = partner;
-        shadowRoot.getElementById('time-issue-lsp').textContent = lsp;
-        shadowRoot.getElementById('time-default-component').textContent = component;
+        safeSetTextContent('time-issue-key', currentIssueKey);
+        safeSetTextContent('time-issue-summary', summary);
+        safeSetTextContent('time-issue-partner', partner);
+        safeSetTextContent('time-issue-lsp', lsp);
+        safeSetTextContent('time-default-component', component);
 
-        shadowRoot.getElementById('chat-issue-key').textContent = currentIssueKey;
-        shadowRoot.getElementById('chat-issue-summary').textContent = summary;
+        safeSetTextContent('chat-issue-key', currentIssueKey);
+        safeSetTextContent('chat-issue-summary', summary);
 
         // Detect if active ticket is Epic and update button labels
         const issueTypeObj = currentIssueData.fields.issuetype;
         const issueTypeName = issueTypeObj.name.toLowerCase();
         currentIsEpic = issueTypeName.includes('epic') || (typeof issueTypeObj.hierarchyLevel === 'number' && issueTypeObj.hierarchyLevel > 0);
         
-        const chatSubmitBtn = shadowRoot.getElementById('chat-submit-btn');
-        if (currentIsEpic) {
-          chatSubmitBtn.textContent = '💬 Send Direct Comment (as yourself)';
-        } else {
-          chatSubmitBtn.textContent = '💬 Send Standard Comment (as yourself)';
+        const chatSubmitBtn = shadowRoot ? shadowRoot.getElementById('chat-submit-btn') : null;
+        if (chatSubmitBtn) {
+          if (currentIsEpic) {
+            chatSubmitBtn.textContent = '💬 Send Direct Comment (as yourself)';
+          } else {
+            chatSubmitBtn.textContent = '💬 Send Standard Comment (as yourself)';
+          }
         }
 
         // Load Canned Select Options
         populateCannedSelect();
+
+        // Populate Time Types dropdown based on space (PLINTS vs Epic spaces)
+        const projKey = currentIssueKey.split('-')[0];
+        populateTimeTypesSelect(projKey);
 
         // Load Children List
         await fetchAndPopulateChildren(currentIssueKey);
@@ -811,12 +1260,32 @@
     const select = shadowRoot.getElementById('chat-canned-select');
     select.innerHTML = '<option value="">Choose a template...</option>';
     
+    const systemGroup = document.createElement('optgroup');
+    systemGroup.label = 'System Templates';
+    
+    const customGroup = document.createElement('optgroup');
+    customGroup.label = 'My Custom Templates';
+    
+    let hasSystem = false;
+    let hasCustom = false;
+    
     cachedCannedResponses.forEach((response, index) => {
       const opt = document.createElement('option');
       opt.value = index;
       opt.textContent = response.title;
-      select.appendChild(opt);
+      
+      if (response.category === 'Custom') {
+        customGroup.appendChild(opt);
+        hasCustom = true;
+      } else {
+        systemGroup.appendChild(opt);
+        hasSystem = true;
+      }
     });
+    
+    if (hasSystem) select.appendChild(systemGroup);
+    if (hasCustom) select.appendChild(customGroup);
+    
     if (select.updateCustomDisplay) select.updateCustomDisplay();
   }
 
@@ -1146,4 +1615,61 @@
     }
     return false;
   }
+
+  // Jira Priority & Partner Tier Row Colors
+  function applyColors() {
+
+    document.querySelectorAll('[role="row"]').forEach(row => {
+
+      const text = row.innerText.toLowerCase();
+
+      // reset
+      row.style.removeProperty("background-color");
+
+      // Partner Tier Gold
+    if (text.includes("🟡")) {
+      row.style.backgroundColor = "#F6E7A1";
+      }
+
+      // Highest / Blocker
+    else if (text.includes("highest") || text.includes("blocker")) {
+        row.style.backgroundColor = "#EFA3A3";
+      }
+
+      // Critical
+    else if (text.includes("critical")) {
+        row.style.backgroundColor = "#F5C2C2";
+      }
+
+      // High
+    else if (text.includes("high")) {
+        row.style.backgroundColor = "#F6D7C3";
+      }
+
+      // Medium / Major
+    else if (text.includes("medium") || text.includes("major")) {
+        row.style.backgroundColor = "#F8EED3";
+      }
+
+    else {
+        row.style.backgroundColor = "";
+      }
+
+    });
+  }
+
+
+  // Jira is SPA, rows change dynamically
+  const jiraColorObserver = new MutationObserver(() => {
+    applyColors();
+  });
+
+  jiraColorObserver.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+
+
+  // Initial coloring
+  applyColors();
 })();

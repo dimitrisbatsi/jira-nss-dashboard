@@ -561,6 +561,22 @@
   color: #ffffff;
 }
 
+.pilot-custom-select-group-header {
+  padding: 6px 12px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #00b8d9;
+  background: rgba(255, 255, 255, 0.03);
+  user-select: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.pilot-custom-select-option.grouped {
+  padding-left: 24px;
+}
+
 /* Accordion panel */
 .pilot-accordion {
   border: 1px solid rgba(255, 255, 255, 0.1);
