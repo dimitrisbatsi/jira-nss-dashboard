@@ -114,11 +114,26 @@ def main():
             # This ensures only one job runs at a time to prevent conflicts/locks
             with engine.begin() as conn:
                 running_job = conn.execute(
-                    text("SELECT JobID FROM ETL_Queue WHERE Status = 'Running'")
+                    text("SELECT JobID, StartedAt FROM ETL_Queue WHERE Status = 'Running'")
                 ).fetchone()
                 
             if running_job:
-                # A job is already running; wait for it
+                # Check for stale/zombie running job (running > 6 hours)
+                run_id, started_at = running_job
+                if started_at:
+                    now_utc = datetime.now()
+                    # If started_at is naive, compare with datetime.now()
+                    elapsed_hours = (now_utc - started_at).total_seconds() / 3600.0
+                    if elapsed_hours > 6:
+                        print(f"[!] Job #{run_id} has been 'Running' for {elapsed_hours:.1f} hours. Marking as Failed (Stale/Timeout).")
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text("UPDATE ETL_Queue SET Status = 'Failed', FinishedAt = :now WHERE JobID = :id"),
+                                {"now": datetime.now(), "id": run_id}
+                            )
+                        continue
+
+                # A job is legitimately running; wait for it
                 time.sleep(3)
                 continue
                 
@@ -220,40 +235,51 @@ def main():
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
             
-            with open(log_path, "w", encoding="utf-8") as log_file:
-                log_file.write(f"=== ETL Job #{job_id} ({job_type}) ===\n")
-                log_file.write(f"Started At: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                log_file.write("==================================================\n\n")
-                log_file.flush()
-                
-                try:
-                    process = subprocess.Popen(
-                        [sys.executable, "-u", "-c", statement],
-                        stdout=log_file,
-                        stderr=subprocess.STDOUT,
-                        env=env
-                    )
-                    process.wait()
-                    exit_code = process.returncode
-                except Exception as proc_ex:
-                    log_file.write(f"\n[CRITICAL ERROR] Failed to start subprocess: {proc_ex}\n")
-                    log_file.write(traceback.format_exc())
-                    exit_code = -1
+            exit_code = -1
+            try:
+                with open(log_path, "w", encoding="utf-8") as log_file:
+                    log_file.write(f"=== ETL Job #{job_id} ({job_type}) ===\n")
+                    log_file.write(f"Started At: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    log_file.write("==================================================\n\n")
+                    log_file.flush()
                     
-                log_file.write("\n==================================================\n")
-                log_file.write(f"Finished At: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} with Exit Code: {exit_code}\n")
-                log_file.write("==================================================\n")
+                    try:
+                        process = subprocess.Popen(
+                            [sys.executable, "-u", "-c", statement],
+                            stdout=log_file,
+                            stderr=subprocess.STDOUT,
+                            env=env
+                        )
+                        process.wait()
+                        exit_code = process.returncode
+                    except Exception as proc_ex:
+                        log_file.write(f"\n[CRITICAL ERROR] Failed to start subprocess: {proc_ex}\n")
+                        log_file.write(traceback.format_exc())
+                        exit_code = -1
+                        
+                    log_file.write("\n==================================================\n")
+                    log_file.write(f"Finished At: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} with Exit Code: {exit_code}\n")
+                    log_file.write("==================================================\n")
+            except Exception as log_ex:
+                print(f"[!] Log writing error for Job #{job_id}: {log_ex}")
+            finally:
+                # 6. Update database status based on execution result (ALWAYS executed)
+                final_status = 'Success' if exit_code == 0 else 'Failed'
+                print(f"[JOB #{job_id}] Finished with Status: {final_status}")
                 
-            # 6. Update database status based on execution result
-            final_status = 'Success' if exit_code == 0 else 'Failed'
-            print(f"[JOB #{job_id}] Finished with Status: {final_status}")
-            
-            with engine.begin() as conn:
-                conn.execute(
-                    text("UPDATE ETL_Queue SET Status = :status, FinishedAt = :now WHERE JobID = :id"),
-                    {"status": final_status, "now": datetime.now(), "id": job_id}
-                )
-                
+                # Retry loop for updating DB status
+                for attempt in range(5):
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text("UPDATE ETL_Queue SET Status = :status, FinishedAt = :now WHERE JobID = :id"),
+                                {"status": final_status, "now": datetime.now(), "id": job_id}
+                            )
+                        break
+                    except Exception as update_ex:
+                        print(f"[!] Retry {attempt+1}/5 updating job status for #{job_id}: {update_ex}")
+                        time.sleep(2)
+
         except Exception as e:
             print(f"[ERROR] Exception in polling loop: {e}")
             traceback.print_exc()
