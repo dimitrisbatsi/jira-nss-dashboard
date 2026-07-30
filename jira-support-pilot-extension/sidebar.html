@@ -12,6 +12,18 @@
     <button id="support-pilot-refresh" class="pilot-refresh-btn" title="Refresh Ticket Data">🔄</button>
   </div>
 
+  <!-- Update Alert Banner (Hidden by default) -->
+  <div id="pilot-update-banner" class="pilot-update-banner hide">
+    <div class="pilot-update-content">
+      <span class="pilot-update-icon">🔔</span>
+      <div class="pilot-update-text">
+        <strong>New Version Available!</strong>
+        <span id="pilot-update-version-text">v1.4 is available</span>
+      </div>
+    </div>
+    <a id="pilot-update-download-btn" href="#" target="_blank" class="pilot-update-action-btn">📥 Download</a>
+  </div>
+
   <!-- Tabs Nav -->
   <div class="pilot-tabs">
     <button class="pilot-tab-btn active" data-tab="time-tab">🕒 Time Log</button>
@@ -187,6 +199,12 @@
         <button id="settings-token-toggle" class="pilot-pw-toggle">👁️</button>
       </div>
       <small class="pilot-help-text">Generate a token at <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank">id.atlassian.com</a></small>
+    </div>
+
+    <div class="pilot-form-group">
+      <label for="settings-hub-url">NSS Support Hub Server URL:</label>
+      <input type="url" id="settings-hub-url" class="pilot-input" placeholder="http://dev-gemini:8501" value="http://dev-gemini:8501">
+      <small class="pilot-help-text">Used for extension update checks & template syncing.</small>
     </div>
 
     <button id="settings-save-btn" class="pilot-btn pilot-btn-primary">💾 Save Settings</button>

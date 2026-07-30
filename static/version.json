@@ -1,0 +1,9 @@
+{
+  "name": "Jira Support Pilot",
+  "version": "1.3",
+  "description": "Chrome/Edge extension to simplify timesheet logging and client communication on Jira Cloud.",
+  "download_url": "/app/static/jira-support-pilot-extension.zip",
+  "filename": "jira-support-pilot-extension.zip",
+  "updated_at": "2026-07-30T12:03:14.243187",
+  "release_notes": "Jira Support Pilot v1.3"
+}

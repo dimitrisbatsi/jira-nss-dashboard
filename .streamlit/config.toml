@@ -14,3 +14,7 @@ textColor = "#0F172A"
 
 # Η γραμματοσειρά (sans serif για πιο μοντέρνο look)
 font = "sans serif"
+
+[server]
+enableStaticServing = true
+

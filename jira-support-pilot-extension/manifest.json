@@ -7,7 +7,12 @@
     "storage"
   ],
   "host_permissions": [
-    "https://epsilon-singularlogic.atlassian.net/*"
+    "https://epsilon-singularlogic.atlassian.net/*",
+    "http://dev-gemini:8501/*",
+    "http://dev-gemini/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "*://*/*"
   ],
   "background": {
     "service_worker": "background.js"

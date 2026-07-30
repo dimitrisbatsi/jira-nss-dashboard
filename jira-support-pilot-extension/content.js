@@ -285,6 +285,67 @@
     });
   }
 
+  // Retrieve NSS Support Hub Server URL from storage
+  function getHubUrl() {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(['pilotHubUrl'], (result) => {
+        resolve(result.pilotHubUrl || 'http://dev-gemini:8501');
+      });
+    });
+  }
+
+  // Compare semver version strings
+  function isNewerVersion(serverVer, currentVer) {
+    if (!serverVer || !currentVer) return false;
+    const sParts = serverVer.split('.').map(p => parseInt(p, 10) || 0);
+    const cParts = currentVer.split('.').map(p => parseInt(p, 10) || 0);
+    const maxLen = Math.max(sParts.length, cParts.length);
+    for (let i = 0; i < maxLen; i++) {
+      const s = sParts[i] || 0;
+      const c = cParts[i] || 0;
+      if (s > c) return true;
+      if (s < c) return false;
+    }
+    return false;
+  }
+
+  // Check NSS Support Hub endpoint for extension updates
+  async function checkExtensionUpdate() {
+    const hubUrl = await getHubUrl();
+    const manifestVer = chrome.runtime.getManifest().version;
+
+    try {
+      chrome.runtime.sendMessage({
+        action: 'CHECK_EXTENSION_UPDATE',
+        payload: { hubUrl }
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.warn('Update check bypassed:', chrome.runtime.lastError.message);
+          return;
+        }
+        if (response && response.success && response.data) {
+          const serverVer = response.data.version;
+          if (isNewerVersion(serverVer, manifestVer)) {
+            const updateBanner = shadowRoot.getElementById('pilot-update-banner');
+            const updateVersionText = shadowRoot.getElementById('pilot-update-version-text');
+            const updateDownloadBtn = shadowRoot.getElementById('pilot-update-download-btn');
+            
+            if (updateBanner && updateVersionText && updateDownloadBtn) {
+              updateVersionText.textContent = `v${serverVer} διαθέσιμη (Έχετε: v${manifestVer})`;
+              const cleanBase = hubUrl.replace(/\/+$/, '');
+              const downloadPath = response.data.download_url || '/app/static/jira-support-pilot-extension.zip';
+              updateDownloadBtn.href = `${cleanBase}${downloadPath.startsWith('/') ? '' : '/'}${downloadPath}`;
+              updateBanner.classList.remove('hide');
+            }
+          }
+        }
+      });
+    } catch (err) {
+      console.warn('Could not check extension update:', err);
+    }
+  }
+
+
   // Fetch current user details from JIRA to obtain accountId for auto-assigning
   async function fetchCurrentUser() {
     if (!credentials) return;
@@ -466,6 +527,8 @@
     saveSettingsBtn.addEventListener('click', () => {
       const email = shadowRoot.getElementById('settings-email').value.trim();
       const token = shadowRoot.getElementById('settings-token').value.trim();
+      const hubUrlInput = shadowRoot.getElementById('settings-hub-url');
+      const hubUrl = (hubUrlInput ? hubUrlInput.value.trim() : '') || 'http://dev-gemini:8501';
       const statusDiv = shadowRoot.getElementById('settings-status');
 
       if (!email || !token) {
@@ -473,11 +536,12 @@
         return;
       }
 
-      chrome.storage.local.set({ jiraEmail: email, jiraToken: token }, async () => {
+      chrome.storage.local.set({ jiraEmail: email, jiraToken: token, pilotHubUrl: hubUrl }, async () => {
         credentials = { email, token };
         showStatus(statusDiv, 'Settings saved successfully!', 'success');
         await fetchCurrentUser();
         refreshActiveIssue();
+        checkExtensionUpdate();
       });
     });
 
@@ -492,11 +556,19 @@
       accIcon.textContent = isHidden ? '▶' : '▼';
     });
 
-    // Load credentials in inputs
+    // Load credentials & Hub URL in inputs
     if (credentials) {
       shadowRoot.getElementById('settings-email').value = credentials.email;
       shadowRoot.getElementById('settings-token').value = credentials.token;
     }
+    getHubUrl().then(url => {
+      const hubUrlInput = shadowRoot.getElementById('settings-hub-url');
+      if (hubUrlInput) hubUrlInput.value = url;
+    });
+
+    // Trigger update check on setup
+    checkExtensionUpdate();
+
 
     // Chat Canned Selection Changed & Real-time Live Markdown Preview
     const cannedSelect = shadowRoot.getElementById('chat-canned-select');

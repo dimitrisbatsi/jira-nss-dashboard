@@ -72,4 +72,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       
     return true; // Keep message channel open for async response
   }
+
+  if (message.action === 'CHECK_EXTENSION_UPDATE') {
+    const rawHubUrl = message.payload?.hubUrl || 'http://dev-gemini:8501';
+    const baseUrl = rawHubUrl.replace(/\/+$/, '');
+    
+    // Try /app/static/version.json first, then fallback to /static/version.json
+    const tryFetchVersion = async (url) => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 sec timeout
+      try {
+        const response = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (response.ok) {
+          const data = await response.json();
+          return { success: true, data };
+        }
+      } catch (err) {
+        clearTimeout(timeoutId);
+      }
+      return null;
+    };
+
+    (async () => {
+      let result = await tryFetchVersion(`${baseUrl}/app/static/version.json`);
+      if (!result) {
+        result = await tryFetchVersion(`${baseUrl}/static/version.json`);
+      }
+      
+      if (result) {
+        sendResponse(result);
+      } else {
+        sendResponse({ 
+          success: false, 
+          error: 'Could not connect to NSS Support Hub endpoint. Make sure you are connected to the corporate network.' 
+        });
+      }
+    })();
+
+    return true; // Keep message channel open for async response
+  }
 });

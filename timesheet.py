@@ -18,8 +18,10 @@ from modules.test_projects_etl import run_real_projects_etl, run_jira_projects_e
 from modules.test_users_etl import run_users_etl, run_jira_users_etl
 from modules.test_components_etl import run_components_etl, run_jira_components_etl
 from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl
+from modules.extension_packager import get_latest_extension_info, package_extension
 
-APP_VERSION = "26.7.1c (2026-07-07)"
+APP_VERSION = "26.8.1a (2026-07-30)"
+
 
 # --- Helper function to parse ClassMarker BBCode to Markdown ---
 def parse_cm_bbcode(text_val):
@@ -1485,7 +1487,29 @@ st.sidebar.multiselect(
 )
 
 st.sidebar.write("---")
+
+# --- Extension Download Section ---
+with st.sidebar.expander("🚀 Jira Support Pilot Extension", expanded=False):
+    st.markdown("**Jira Chrome/Edge Copilot**")
+    try:
+        ext_info, ext_zip_bytes = get_latest_extension_info()
+        if ext_info and ext_zip_bytes:
+            st.caption(f"Τελευταία έκδοση: **v{ext_info.get('version', '1.0')}**")
+            st.download_button(
+                label="📥 Κατέβασμα Extension (.zip)",
+                data=ext_zip_bytes,
+                file_name=ext_info.get("filename", "jira-support-pilot-extension.zip"),
+                mime="application/zip",
+                use_container_width=True
+            )
+            st.info("💡 **Οδηγίες εγκατάστασης:**\n1. Αποσυμπιέστε το .zip σε έναν φάκελο.\n2. Στον Chrome/Edge ανοίξτε: `chrome://extensions`.\n3. Ενεργοποιήστε το *Developer Mode*.\n4. Πατήστε *Load Unpacked* και επιλέξτε τον φάκελο.")
+        else:
+            st.warning("⚠️ Το αρχείο του extension δεν είναι διαθέσιμο.")
+    except Exception as e:
+        st.error(f"Σφάλμα φόρτωσης extension: {e}")
+
 st.sidebar.caption(f"**App Version:** {APP_VERSION}")
+
 
 # 1. INITIALIZATION: Θέτουμε τις αρχικές τιμές στα φίλτρα απευθείας στη μνήμη (παρακάμπτοντας το URL)
 if "filters_init" not in st.session_state:

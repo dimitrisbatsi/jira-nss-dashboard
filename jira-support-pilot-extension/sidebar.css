@@ -618,3 +618,64 @@
 .pilot-accordion-content.hide {
   display: none;
 }
+
+/* Update Alert Banner */
+.pilot-update-banner {
+  background: linear-gradient(135deg, #00b8d9 0%, #0052cc 100%);
+  color: #ffffff;
+  padding: 10px 14px;
+  margin: 10px 15px 0 15px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 4px 12px rgba(0, 184, 217, 0.25);
+}
+
+.pilot-update-banner.hide {
+  display: none !important;
+}
+
+.pilot-update-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pilot-update-icon {
+  font-size: 16px;
+}
+
+.pilot-update-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.pilot-update-text strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pilot-update-text span {
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+.pilot-update-action-btn {
+  background: #ffffff;
+  color: #0052cc;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 4px;
+  text-decoration: none;
+  transition: transform 0.2s, background-color 0.2s;
+  white-space: nowrap;
+}
+
+.pilot-update-action-btn:hover {
+  background: #deebff;
+  transform: translateY(-1px);
+}
+
