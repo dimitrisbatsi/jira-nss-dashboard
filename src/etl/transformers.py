@@ -356,6 +356,7 @@ def transform_jira_custom_fields(raw_issue: Dict[str, Any], cf_mapping: Dict[str
     """
     Σαρώνει το Jira Issue και εξάγει ΟΛΑ τα custom fields στον πίνακα GIssueCustomFields.
     Χρησιμοποιεί το cf_mapping για να βάλει το πραγματικό όνομα του πεδίου στη βάση.
+    Κατ' εξαίρεση, εξάγει και το core πεδίο 'labels' ως CustomField.
     """
     if cf_mapping is None:
         cf_mapping = {}
@@ -369,16 +370,19 @@ def transform_jira_custom_fields(raw_issue: Dict[str, Any], cf_mapping: Dict[str
     mapped_to_core = ["customfield_10194", "customfield_10662", "customfield_11182", "customfield_10860", "customfield_10553"]
     
     for key, raw_value in fields.items():
-        if key.startswith("customfield_") and key not in mapped_to_core:
+        if (key.startswith("customfield_") and key not in mapped_to_core) or key == "labels":
             clean_value = extract_jira_value(raw_value)
             
             if clean_value:
-                match = re.search(r'\d+', key)
-                cf_id = int(match.group()) if match else 0
-                
-                # ΕΔΩ Η ΜΑΓΕΙΑ: Βρίσκουμε το όνομα! 
-                # Αν δεν το βρει στο CSV, κρατάει το "customfield_XXXX" ως ασφάλεια.
-                real_name = cf_mapping.get(key, key)
+                if key == "labels":
+                    cf_id = 999999  # Ειδικό CustomFieldID για το πεδίο labels
+                    real_name = cf_mapping.get("labels", "labels")
+                else:
+                    match = re.search(r'\d+', key)
+                    cf_id = int(match.group()) if match else 0
+                    # ΕΔΩ Η ΜΑΓΕΙΑ: Βρίσκουμε το όνομα! 
+                    # Αν δεν το βρει στο CSV, κρατάει το "customfield_XXXX" ως ασφάλεια.
+                    real_name = cf_mapping.get(key, key)
                 
                 try:
                     cf_obj = CustomFieldSchema(

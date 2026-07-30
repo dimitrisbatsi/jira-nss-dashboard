@@ -310,11 +310,13 @@ def get_dynamic_jira_fields(csv_filename: str = "jira_custom_fields.csv"):
                 if pd.isna(cf_val) or cf_val == 'nan' or not cf_val:
                     continue 
                     
-                # Φτιάχνουμε το σωστό κλειδί (π.χ. customfield_10014)
+                # Φτιάχνουμε το σωστό κλειδί (π.χ. customfield_10014 ή labels)
                 if cf_val.startswith('customfield_'):
                     cf_id_str = cf_val
                 elif cf_val.isdigit():
                     cf_id_str = f"customfield_{cf_val}"
+                elif cf_val == 'labels':
+                    cf_id_str = 'labels'
                 else:
                     continue
                     
