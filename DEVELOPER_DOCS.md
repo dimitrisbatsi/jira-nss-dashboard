@@ -1,15 +1,16 @@
-# Developer Documentation - NSS Timesheet App v26.7.1a
+# Developer Documentation - NSS Support Hub v26.8.1a
 
-Αυτό το έγγραφο περιέχει τις τεχνικές λεπτομέρειες, την αρχιτεκτονική και την τεκμηρίωση των μεθόδων της εφαρμογής **NSS Timesheet Dashboard**. Είναι σχεδιασμένο για developers που θέλουν να συντηρήσουν, να επεκτείνουν ή να αποσφαλματώσουν την εφαρμογή.
+Αυτό το έγγραφο περιέχει τις τεχνικές λεπτομέρειες, την αρχιτεκτονική και την τεκμηρίωση των μεθόδων της εφαρμογής **NSS Support Hub (πρώην NSS Timesheet Dashboard)**. Είναι σχεδιασμένο για developers που θέλουν να συντηρήσουν, να επεκτείνουν ή να αποσφαλματώσουν την εφαρμογή.
 
 ---
 
 ## 1. Αρχιτεκτονική Εφαρμογής & Ροή Δεδομένων
 
-Η εφαρμογή αποτελείται από τρία κύρια μέρη:
-1. **Front-end / Interactive Dashboard (Streamlit)**: Υλοποιείται στο αρχείο [timesheet.py](timesheet.py). Παρέχει το γραφικό περιβάλλον χρήστη (GUI), τα φίλτρα, τα γραφήματα, τη διαχείριση χρηστών/ομάδων και τη Βάση Γνώσης (KB).
-2. **Database (SQL Server)**: Αποθηκεύει όλα τα συγχρονισμένα δεδομένα (Projects, Users, Components, Issues, Worklogs, Comments, Audits), τις ρυθμίσεις των χρηστών, τα presets και τα logs της εφαρμογής.
-3. **ETL Pipelines (Python Modules)**: Βρίσκονται στον φάκελο [modules/](modules/) και εκτελούν τις διαδικασίες Extract-Transform-Load από τα APIs του Gemini και του Jira προς τον SQL Server.
+Η εφαρμογή αποτελείται από τέσσερα κύρια μέρη:
+1. **Front-end / Interactive Dashboard (Streamlit)**: Υλοποιείται στο αρχείο [timesheet.py](timesheet.py). Παρέχει το γραφικό περιβάλλον χρήστη (GUI), τα φίλτρα, τα γραφήματα, τη διαχείριση χρηστών/ομάδων, τη Βάση Γνώσης (KB) και τη δυνατότητα λήψης του Jira extension.
+2. **Jira Support Pilot Extension (Edge & Chrome Browser Extension)**: Βρίσκεται στον φάκελο [jira-support-pilot-extension](jira-support-pilot-extension/). Προσφέρει δυνατότητες ταχείας καταχώρησης χρόνων εργασίας και χρήσης custom/έτοιμων πρότυπων απαντήσεων απευθείας στο Jira UI, ενώ ελέγχει αυτόματα αν υπάρχει νέα διαθέσιμη έκδοση στον server.
+3. **Database (SQL Server)**: Αποθηκεύει όλα τα συγχρονισμένα δεδομένα (Projects, Users, Components, Issues, Worklogs, Comments, Audits, CustomFields), τις ρυθμίσεις των χρηστών, τα presets και τα logs της εφαρμογής.
+4. **ETL Pipelines & Services (Python Modules)**: Βρίσκονται στον φάκελο [modules/](modules/) και εκτελούν τις διαδικασίες Extract-Transform-Load από τα APIs του Gemini και του Jira προς τον SQL Server.
 
 ### Ροή Συγχρονισμού ETL
 ```mermaid
@@ -206,13 +207,14 @@ graph TD
 * **`run_components_etl()`**: Συγχρονίζει τα components των projects από το Gemini.
 * **`run_jira_components_etl()`**: Συγχρονίζει τα components των Jira projects.
 
-### 5.4. [modules/test_issues_etl.py](modules/test_issues_etl.py)
+### 5.4. [modules/test_issues_etl.py](modules/test_issues_etl.py) & [src/etl/transformers.py](src/etl/transformers.py)
 * **`run_incremental_issues_and_children_etl()`**: Εκτελεί incremental συγχρονισμό για τα Gemini Issues, Comments, Audits (History), Custom Fields και Time Trackings. Ελέγχει την ημερομηνία `last_sync` και φέρνει μόνο τα τροποποιημένα/νέα στοιχεία.
 * **`run_incremental_jira_etl(ignore_last_sync=False)`**: Εκτελεί incremental συγχρονισμό για τα Jira Issues.
   * **`ignore_last_sync=True` (Jira Full Sync)**: Παρακάμπτει την ημερομηνία τελευταίου συγχρονισμού και θέτει ως αρχική ημερομηνία την `2000-01-01`, κάνοντας λήψη όλων των δεδομένων από το μηδέν.
   * Φιλτράρει τα issues βάσει των Jira Projects και του JQL query: `(product name[dropdown] IN ("PYLON COMMERCIAL", "PYLON ERP", "PYLON FLEX", "Galaxy Enterprise") OR product name[dropdown] IS EMPTY)`.
-* **`run_single_jira_issue_sync(issue_key)`**: Συγχρονίζει ένα συγκεκριμένο Jira Issue με βάση το IssueKey (π.χ. `PYLCOM-1259`). Εκτελεί όλα τα επιμέρους βήματα (σύνδεση, λήψη raw δεδομένων, transform για Issues, Audits, Custom Fields, Comments, Worklogs και upsert loaders στη βάση δεδομένων) με αναλυτικό step-by-step logging για σκοπούς debugging. Εξασφαλίζει επίσης την κωδικοποίηση της κονσόλας σε UTF-8 για την αποφυγή encoding σφαλμάτων σε Windows locale.
-* **`run_jira_date_range_sync(start_date_str, end_date_str, date_type='updated')`**: Συγχρονίζει τα Jira Issues που δημιουργήθηκαν ή ενημερώθηκαν σε ένα συγκεκριμένο ημερομηνιακό διάστημα. Κατασκευάζει JQL ερώτημα φιλτράροντας με βάση το πεδίο `updated` ή `created` του Jira.
+  * **Core Field Exception `labels`**: Εξάγει κατ' εξαίρεση το βασικό πεδίο `labels` του Jira Cloud API ως εγγραφή Custom Field στον πίνακα `GIssueCustomFields` με ειδικό ID `CustomFieldID = 999999`, συνενώνοντας τις ετικέτες σε string διαχωρισμένο με κόμμα (comma-separated string).
+* **`run_single_jira_issue_sync(issue_key)`**: Συγχρονίζει ένα συγκεκριμένο Jira Issue με βάση το IssueKey (π.χ. `PYLCOM-1259`). Εκτελεί όλα τα επιμέρους βήματα με αναλυτικό step-by-step logging για σκοπούς debugging.
+* **`run_jira_date_range_sync(start_date_str, end_date_str, date_type='updated')`**: Συγχρονίζει τα Jira Issues που δημιουργήθηκαν ή ενημερώθηκαν σε ένα συγκεκριμένο ημερομηνιακό διάστημα.
 
 ### 5.5. [modules/test_comments_etl.py](modules/test_comments_etl.py)
 * **`run_incremental_comments_etl()`**: Εκτελεί μεμονωμένο incremental συγχρονισμό για τα σχόλια (Comments) των Issues.
@@ -220,25 +222,30 @@ graph TD
 ### 5.6. [src/etl/migrator.py](src/etl/migrator.py) & [src/api/gemini_client.py](src/api/gemini_client.py)
 * **Gemini-to-Jira Migration Engine**: Υλοποιεί τον πλήρη μηχανισμό μεταφοράς αιτημάτων από το Gemini στο Jira Cloud API.
   * **Auto-chunking Search**: Λόγω timeouts του Gemini API σε μεγάλα αιτήματα, το ETL σπάει το ημερομηνιακό εύρος σε μικρότερα διαστήματα (έως 3 μήνες) και εκτελεί διαδοχικές κλήσεις συγχρονίζοντας τα αποτελέσματα.
-  * **User Cache**: Διατηρεί τοπική cache χρηστών (`UserCache`) για τη γρήγορη αντιστοίχιση των resources (Gemini FullName -> Jira AccountID) με βάση το Email, το ονοματεπώνυμο ή fuzzy matching.
+  * **User Cache**: Διατηρεί τοπική cache χρηστών (`UserCache`) για τη γρήγορη αντιστοίχιση των resources με βάση το Email, το ονοματεπώνυμο ή fuzzy matching.
   * **Jira Key Mapping**: Καταγράφει το νέο `JiraKey` στο custom field `GeminiJiraKey` του Gemini ώστε να συνδέονται αμφίδρομα τα δύο συστήματα.
   * **Attachments Migration**: Ανιχνεύει τα αρχεία του Gemini, τα κατεβάζει μέσω API και τα κάνει upload στο αντίστοιχο Jira Issue.
-  * **Workflow & Status Mapping**: Αντιστοιχίζει το status του Gemini με το αντίστοιχο status του Jira workflow (π.χ. *Closed*, *Awaiting Customer*).
-
+  * **Workflow & Status Mapping**: Αντιστοιχίζει το status του Gemini με το αντίστοιχο status του Jira workflow.
 
 ### 5.7. [etl_worker.py](etl_worker.py)
-* **Background Worker**: Ένας αυτόνομος daemon που εκτελείται συνεχώς (polling loop ανά 3 δευτερόλεπτα) στον server. 
+* **Background Worker**: Ένας αυτόνομος daemon που εκτελείται συνεχώς (polling loop ανά 3 δευτερόλεπτα) στον server ως **NSSM Windows Service**. 
   * Αντλεί το παλαιότερο job με κατάσταση `Pending` από τον πίνακα `ETL_Queue`.
   * Εξασφαλίζει ότι εκτελείται μόνο ένα job τη φορά για την αποφυγή locks στη βάση.
   * Εκκινεί ένα ξεχωριστό subprocess (Python με unbuffered flag `-u` και εξαναγκασμένο `PYTHONIOENCODING=utf-8`) για την απομόνωση της εκτέλεσης.
   * Κατευθύνει τα live logs της διεργασίας σε αρχείο log στη διαδρομή `logs/etl_job_<JobID>.log`.
-  * Ενημερώνει την κατάσταση του job σε `Running`, `Success` ή `Failed` ανάλογα με το exit code του subprocess.
-  * **Self-Healing (Αυτο-ίαση)**: Κατά την εκκίνησή του, ο worker εντοπίζει αυτόματα τυχόν εργασίες που είχαν μείνει σε κατάσταση `Running` (λόγω προηγούμενης βίαιης διακοπής ή κρασαρίσματος του συστήματος) και τις θέτει αυτόματα σε κατάσταση `Failed` (Interrupted), απελευθερώνοντας άμεσα την ουρά.
+  * **Fault-Tolerant Status Updates**: Χρησιμοποιεί `try...finally` μηχανισμό με retry loop 5 προσπαθειών ώστε η κατάσταση του job (`Success` ή `Failed`) να ενημερώνεται **πάντα** στη βάση δεδομένων χωρίς να παγώνει η ουρά αν κάποιο subprocess αποτύχει.
+  * **Stale & Zombie Jobs Cleanup**: Ανιχνεύει αυτόματα εργασίες που βρίσκονται σε κατάσταση `Running` για πάνω από 6 ώρες (timeout) ή έχουν `StartedAt IS NULL` και τις μετατρέπει σε `Failed`, ξεμπλοκάροντας άμεσα την ουρά.
 
 ### 5.8. Μηχανισμός Αποφυγής & Διαχείρισης Deadlocks (Database Deadlock Handling)
 Για την αποφυγή συγκρούσεων (deadlocks) κατά την παράλληλη εκτέλεση του Streamlit Dashboard και του ETL Background Worker, εφαρμόζονται οι εξής τεχνικές στο [src/etl/loaders.py](src/etl/loaders.py):
-* **Δυναμική Ονοματολογία Staging Πινάκων (Dynamic Staging Tables)**: Αντί για στατικά ονόματα (π.χ. `GComments_StagingTemp`), οι προσωρινοί staging πίνακες παράγονται πλέον δυναμικά με μοναδικό τυχαίο suffix (π.χ. `GComments_Stg_<random_uuid_suffix>`). Αυτό εξαλείφει πλήρως τις συγκρούσεις κλειδωμάτων και τις αλληλοεπικαλύψεις μεταξύ διαφορετικών ETL jobs.
-* **Μηχανισμός Αυτόματης Επανάληψης (Retry Decorator on Deadlock)**: Όλες οι loaders συναρτήσεις (`upsert_issues`, `upsert_comments`, κλπ.) είναι διακοσμημένες με τον decorator `@retry_on_deadlock()`. Σε περίπτωση που ο SQL Server επιλέξει τη συναλλαγή ως θύμα deadlock (Error Code `1205`, SQLState `40001`), ο decorator εκτελεί αυτόματα rollback, περιμένει ένα μικρό διάστημα με τυχαία καθυστέρηση (exponential backoff with jitter) και επαναλαμβάνει τη συναλλαγή (έως 5 προσπάθειες) χωρίς να κρασάρει η διεργασία.
+* **Δυναμική Ονοματολογία Staging Πινάκων (Dynamic Staging Tables)**: Αντί για στατικά ονόματα, οι προσωρινοί staging πίνακες παράγονται πλέον δυναμικά με μοναδικό τυχαίο suffix (π.χ. `GComments_Stg_<random_uuid_suffix>`).
+* **Μηχανισμός Αυτόματης Επανάληψης (Retry Decorator on Deadlock)**: Όλες οι loaders συναρτήσεις είναι διακοσμημένες με τον decorator `@retry_on_deadlock()` με exponential backoff and jitter (έως 5 προσπάθειες).
+
+### 5.9. [modules/extension_packager.py](modules/extension_packager.py) & [jira-support-pilot-extension](jira-support-pilot-extension/)
+* **Extension Auto-Packager & Versioning**:
+  * **`package_extension()`**: Σαρώνει τον φάκελο `jira-support-pilot-extension`, διαβάζει το `version` από το `manifest.json`, συμπιέζει τα αρχεία σε `./static/jira-support-pilot-extension.zip` και δημιουργεί το `./static/version.json`.
+  * **Smart Repackaging**: Ελέγχει τα timestamps των αρχείων του extension και εκτελεί repackaging μόνο όταν εντοπιστούν τροποποιήσεις.
+  * **Live Updates Check API**: Το extension εκτελεί background fetch στο endpoint `http://dev-gemini:8501/app/static/version.json` (με `AbortController` timeout 4s) και εμφανίζει ειδοποίηση (banner) στο UI του χρήστη όταν υπάρχει διαθέσιμη νεότερη έκδοση.
 
 ---
 

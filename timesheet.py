@@ -3428,6 +3428,20 @@ def run_etl_subprocess_statement(statement_str, description):
     process.wait()
     return process.returncode == 0
 
+def is_etl_worker_running():
+    """Ελέγχει αν η διεργασία etl_worker.py εκτελείται στο σύστημα (NSSM / Background)."""
+    try:
+        if sys.platform.startswith('win'):
+            cmd = ['powershell', '-Command', "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*etl_worker.py*' } | Select-Object -ExpandProperty ProcessId"]
+            out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
+            pids = [line.strip() for line in out.splitlines() if line.strip().isdigit()]
+            return len(pids) > 0
+        else:
+            out = subprocess.check_output(["pgrep", "-f", "etl_worker.py"], text=True, stderr=subprocess.DEVNULL)
+            return bool(out.strip())
+    except Exception:
+        return False
+
 def queue_etl_job(job_type, issue_key=None, start_date=None, end_date=None, date_type=None, created_by=None):
     engine = get_db_engine()
     if not engine:
@@ -3456,6 +3470,14 @@ def queue_etl_job(job_type, issue_key=None, start_date=None, end_date=None, date
 
 def render_etl_manager_content():
     st.subheader("🚀 Data Warehouse ETL Manager", divider="blue")
+    
+    # Worker Service Health Indicator
+    worker_running = is_etl_worker_running()
+    if worker_running:
+        st.caption("🟢 **ETL Background Worker (NSSM Windows Service)**: Ενεργός (Running)")
+    else:
+        st.warning("⚠️ **Ο ETL Background Worker (Windows Service) δεν εκτελείται αυτή τη στιγμή στον server.** Παρακαλώ ελέγξτε ή επανεκκινήστε το Windows Service (NSSM).")
+
     st.markdown("Διαχειριστικό περιβάλλον για τον συγχρονισμό δεδομένων από Gemini και Jira στο SQL Server.")
 
     # Δημιουργία Tabs (Καρτέλες) μέσα στο κυρίως Tab του μενού
@@ -3951,6 +3973,15 @@ def render_manual_content():
     # expander - Changelog
     with st.expander("📋 Ιστορικό Εκδόσεων (Changelog)"):
         st.markdown("""
+        ### Έκδοση 26.8.1a (2026-07-30)
+        * **Νέο (Jira Support Pilot Extension & Auto-Packager):** Δημιουργία και ενσωμάτωση του Browser Extension (`jira-support-pilot-extension`) για Chrome & Edge με δυνατότητες ταχείας καταχώρησης χρόνων και πρότυπων απαντήσεων στο Jira UI.
+        * **Νέο (Extension Auto-Packager & Versioning):** Αυτόματος μηχανισμός συμπίεσης (`modules/extension_packager.py`) που παράγει το `.zip` και το `version.json` στο `./static/`, με κουμπί λήψης στο sidebar της εφαρμογής και αυτόματο repackaging όταν εντοπιστούν αλλαγές.
+        * **Νέο (Extension Live Updates Check):** Το extension ελέγχει αυτόματα μέσω API endpoint (`http://dev-gemini:8501/app/static/version.json`) αν υπάρχει νέα διαθέσιμη έκδοση στο root του NSS Support Hub και εμφανίζει ειδοποίηση (update banner) στο UI.
+        * **Νέο (Jira Core Field `labels` Support):** Πλήρης υποστήριξη του core πεδίου `labels` του Jira στον πίνακα `GIssueCustomFields` με ειδικό αναγνωριστικό `CustomFieldID = 999999` και αντιστοίχιση φιλικών ονομάτων από το `jira_custom_fields.csv`.
+        * **Fix (ETL Queue & Worker Fault Tolerance):** Προσθήκη `try...finally` μηχανισμού ενημέρωσης κατάστασης (`Failed`/`Success`) με retries στον `etl_worker.py` ώστε να μην κολλάει ποτέ η ουρά εργασιών αν κάποιο job αποτύχει.
+        * **Fix (Worker Stale Cleanup & Datetime Safety):** Αυτόματος καθαρισμός κολλημένων διεργασιών (>6 ώρες timeout), διαχείριση `StartedAt IS NULL` και ασφαλής αφαίρεση timezone offset (`tzinfo=None`).
+        * **Fix (Windows Service / NSSM Health Indicator):** Ζωντανή ένδειξη κατάστασης του `etl_worker.py` (NSSM Windows Service) στην κορυφή του ETL Manager UI.
+
         ### Έκδοση 26.7.1a (2026-07-02)
         * **Νέο (Gemini to Jira Migration):** Πλήρης ενσωμάτωση του μηχανισμού μεταφοράς αιτημάτων (Gemini → Jira) με υποστήριξη φίλτρων (Gemini Project Code, Ημερομηνίες, Κείμενο Αναζήτησης, Advanced Exclusion NOT filters) και αυτόματη μεταφόρτωση συνημμένων (attachments) και αντιστοίχιση χρηστών (resources mapping).
         * **Νέο (Gemini API Timeout Mitigation):** Αυτόματος τεμαχισμός αναζήτησης (auto-chunking) σε διαστήματα 3 μηνών για την αποφυγή timeouts του Gemini API.

@@ -118,12 +118,22 @@ def main():
                 ).fetchone()
                 
             if running_job:
-                # Check for stale/zombie running job (running > 6 hours)
+                # Check for stale/zombie running job
                 run_id, started_at = running_job
-                if started_at:
-                    now_utc = datetime.now()
-                    # If started_at is naive, compare with datetime.now()
-                    elapsed_hours = (now_utc - started_at).total_seconds() / 3600.0
+                if not started_at:
+                    print(f"[!] Job #{run_id} is marked 'Running' but has no StartedAt timestamp. Marking as Failed (Corrupted).")
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text("UPDATE ETL_Queue SET Status = 'Failed', FinishedAt = :now WHERE JobID = :id"),
+                            {"now": datetime.now(), "id": run_id}
+                        )
+                    continue
+                else:
+                    # Strip timezone if present to prevent naive/aware TypeError
+                    if hasattr(started_at, 'tzinfo') and started_at.tzinfo is not None:
+                        started_at = started_at.replace(tzinfo=None)
+                    now_naive = datetime.now()
+                    elapsed_hours = (now_naive - started_at).total_seconds() / 3600.0
                     if elapsed_hours > 6:
                         print(f"[!] Job #{run_id} has been 'Running' for {elapsed_hours:.1f} hours. Marking as Failed (Stale/Timeout).")
                         with engine.begin() as conn:
