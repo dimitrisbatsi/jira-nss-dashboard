@@ -1610,7 +1610,7 @@ def render_dashboard_content(df, last_updated):
         st.write("")
         st.caption(f"🔄 **Τελευταία Ενημέρωση Δεδομένων:** {last_updated}")
 
-    # --- Top Banner: Latest Announcement & Pro Tip (Shown directly) ---
+    # --- Top Banner: Latest Announcement & Pro Tip (Expandable) ---
     latest_announcement = load_latest_content("Announcement")
     latest_protip = load_latest_content("ProTip")
     
@@ -1620,12 +1620,16 @@ def render_dashboard_content(df, last_updated):
         with col_ann:
             if latest_announcement:
                 author_str = f"\n\n✍️ *Συντάκτης: {latest_announcement['Author']}*" if latest_announcement.get('Author') else ""
-                st.info(f"📢 **Πρόσφατη Ανακοίνωση: {latest_announcement['Title']}**\n\n{latest_announcement['Body']}{author_str}")
+                st.info(f"📢 **Πρόσφατη Ανακοίνωση:** {latest_announcement['Title']}")
+                with st.expander("📖 Διαβάστε Περισσότερα"):
+                    st.markdown(f"{latest_announcement['Body']}{author_str}")
                 
         with col_tip:
             if latest_protip:
                 author_str = f"\n\n✍️ *Συντάκτης: {latest_protip['Author']}*" if latest_protip.get('Author') else ""
-                st.success(f"💡 **Weekly Pro Tip: {latest_protip['Title']}**\n\n{latest_protip['Body']}{author_str}")
+                st.success(f"💡 **Weekly Pro Tip:** {latest_protip['Title']}")
+                with st.expander("📖 Διαβάστε Περισσότερα"):
+                    st.markdown(f"{latest_protip['Body']}{author_str}")
         st.write("<br>", unsafe_allow_html=True)
 
     # --- 💾 Saved Previews Section ---
