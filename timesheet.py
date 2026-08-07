@@ -20,7 +20,7 @@ from modules.test_components_etl import run_components_etl, run_jira_components_
 from modules.test_issues_etl import run_incremental_issues_and_children_etl, run_incremental_jira_etl
 from modules.extension_packager import get_latest_extension_info, package_extension
 
-APP_VERSION = "26.8.1a (2026-07-30)"
+APP_VERSION = "26.8.1b (2026-08-06)"
 
 
 # --- Helper function to parse ClassMarker BBCode to Markdown ---
@@ -251,6 +251,12 @@ st.markdown("""
     div[data-testid="stExpander"] div[role="combobox"] {
         background-color: #ffffff !important;
     }
+
+    /* Fixed width for sidebar alert messages */
+    /* div[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] > ol,
+    div[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] > ul {
+        width: 100% !important;
+    } */
     </style>
 """, unsafe_allow_html=True)
 
@@ -3977,6 +3983,13 @@ def render_manual_content():
     # expander - Changelog
     with st.expander("📋 Ιστορικό Εκδόσεων (Changelog)"):
         st.markdown("""
+        ### Έκδοση 26.8.1b (2026-08-07)
+        * **Νέο (ClassMarker Dynamic QuestionType Editor):** Προσθήκη επιλογής αλλαγής τύπου ερώτησης (`QuestionType`) στο αναδυόμενο παράθυρο επεξεργασίας (`edit_question_dialog`) με υποστήριξη όλων των τύπων του ClassMarker (`multiplechoice`, `multipleresponse`, `truefalse`, `freeform`, `essay`, `matching`, `short_answer`).
+        * **Νέο (ClassMarker Smart Options UI):** Δυναμική προσαρμογή του περιβάλλοντος επεξεργασίας απαντήσεων βάσει του τύπου ερώτησης (αυτόματη απόκρυψη επιλογών στις ερωτήσεις ανάπτυξης/freeform/essay και αυτόματο κλείδωμα στις επιλογές "Σωστό/Λάθος" για `truefalse`).
+        * **Fix (ClassMarker New Question ID Resolution):** Κατά την αποστολή νέων ερωτήσεων (από εισαγωγή Excel με αρνητικό προσωρινό ID), η εφαρμογή εκτελεί `POST` αίτημα στο API, αντλεί το νέο θετικό ID που παράγει το ClassMarker και ενημερώνει αυτόματα το `QuestionID` στη βάση δεδομένων `CM_Questions`.
+        * **Fix (ClassMarker API Strict Error Handling):** Διόρθωση του ελέγχου απόκρισης του ClassMarker API (έλεγχος του JSON attribute `"status": "ok"` αντί μόνο του HTTP status `200 OK`) και προβολή αναλυτικών μηνυμάτων σφάλματος (`st.error`) στην οθόνη χωρίς εσφαλμένη σήμανση της ερώτησης ως συγχρονισμένης.
+        * **Βελτίωση (Dashboard Announcements UX):** Προσθήκη εσωτερικού expander (`📖 Διαβάστε Περισσότερα`) στις πρόσφατες ανακοινώσεις και τα Pro Tips στην αρχική οθόνη για εξοικονόμηση χώρου.
+
         ### Έκδοση 26.8.1a (2026-07-30)
         * **Νέο (Jira Support Pilot Extension & Auto-Packager):** Δημιουργία και ενσωμάτωση του Browser Extension (`jira-support-pilot-extension`) για Chrome & Edge με δυνατότητες ταχείας καταχώρησης χρόνων και πρότυπων απαντήσεων στο Jira UI.
         * **Νέο (Extension Auto-Packager & Versioning):** Αυτόματος μηχανισμός συμπίεσης (`modules/extension_packager.py`) που παράγει το `.zip` και το `version.json` στο `./static/`, με κουμπί λήψης στο sidebar της εφαρμογής και αυτόματο repackaging όταν εντοπιστούν αλλαγές.
@@ -4067,7 +4080,7 @@ def queue_classmarker_job(job_type, username):
         st.error(f"❌ Σφάλμα κατά την καταχώρηση της διεργασίας: {e}")
         return False
 
-def update_local_question(question_id, category_id, text_content, options_json, points, active):
+def update_local_question(question_id, category_id, text_content, options_json, points, active, question_type=None):
     engine = get_db_engine()
     if not engine:
         return False
@@ -4104,26 +4117,45 @@ def update_local_question(question_id, category_id, text_content, options_json, 
                         }
                     )
             
-            # Apply local modifications
-            conn.execute(
-                text(
-                    "UPDATE CM_Questions "
-                    "SET CategoryID = :cat_id, QuestionText = :q_text, OptionsJSON = :options, "
-                    "    Points = :points, Active = :active, IsLocallyModified = 1 "
-                    "WHERE QuestionID = :id"
-                ),
-                {
-                    "cat_id": category_id,
-                    "q_text": text_content,
-                    "options": options_json,
-                    "points": points,
-                    "active": 1 if active else 0,
-                    "id": question_id
-                }
-            )
+            # Apply local modifications (including QuestionType if provided)
+            if question_type:
+                conn.execute(
+                    text(
+                        "UPDATE CM_Questions "
+                        "SET CategoryID = :cat_id, QuestionType = :q_type, QuestionText = :q_text, OptionsJSON = :options, "
+                        "    Points = :points, Active = :active, IsLocallyModified = 1 "
+                        "WHERE QuestionID = :id"
+                    ),
+                    {
+                        "cat_id": category_id,
+                        "q_type": question_type,
+                        "q_text": text_content,
+                        "options": options_json,
+                        "points": points,
+                        "active": 1 if active else 0,
+                        "id": question_id
+                    }
+                )
+            else:
+                conn.execute(
+                    text(
+                        "UPDATE CM_Questions "
+                        "SET CategoryID = :cat_id, QuestionText = :q_text, OptionsJSON = :options, "
+                        "    Points = :points, Active = :active, IsLocallyModified = 1 "
+                        "WHERE QuestionID = :id"
+                    ),
+                    {
+                        "cat_id": category_id,
+                        "q_text": text_content,
+                        "options": options_json,
+                        "points": points,
+                        "active": 1 if active else 0,
+                        "id": question_id
+                    }
+                )
         return True
     except Exception as e:
-        st.error(f"❌ Σφάλμα κατά την αποθήκευση της ερώτησης: {e}")
+        st.error(f"❌ Σφάλμα κατά την ενημέρωση της ερώτησης: {e}")
         return False
 
 def assign_question_reviewer(question_id, reviewer_id, current_user_id, target_stage):
@@ -4217,9 +4249,13 @@ def push_question_to_classmarker(question_id):
         timestamp = str(int(time.time()))
         signature = hashlib.sha256((api_key + api_secret + timestamp).encode('utf-8')).hexdigest()
         
-        # Real API request
-        # Real API request using PUT for updates
-        url = f"https://api.classmarker.com/v1/questions/{question_id}.json?api_key={api_key}&signature={signature}&timestamp={timestamp}"
+        is_new_question = int(question_id) < 0
+        if is_new_question:
+            # POST for new questions
+            url = f"https://api.classmarker.com/v1/questions.json?api_key={api_key}&signature={signature}&timestamp={timestamp}"
+        else:
+            # PUT for existing question updates
+            url = f"https://api.classmarker.com/v1/questions/{question_id}.json?api_key={api_key}&signature={signature}&timestamp={timestamp}"
         
         opts_dict = {}
         correct_list = []
@@ -4235,30 +4271,80 @@ def push_question_to_classmarker(question_id):
             opts_dict = {}
             correct_list = []
             
+        # Normalize question_type for ClassMarker API (e.g. multiplechoice, truefalse)
+        cm_q_type = str(q_type).replace("_", "").lower()
+        if cm_q_type in ["multiplechoice", "multiple_choice"]:
+            cm_q_type = "multiplechoice"
+        elif cm_q_type in ["truefalse", "true_false"]:
+            cm_q_type = "truefalse"
+
         payload = {
             "question": q_text,
+            "question_type": cm_q_type,
             "category_id": int(category_id),
-            "points": float(points)
+            "points": float(points),
+            "random_answers": False
         }
         
-        if q_type in ["multiple_choice", "true_false", "multiplechoice", "truefalse", "multipleresponse"]:
+        if cm_q_type in ["multiplechoice", "truefalse", "multipleresponse"]:
             payload["options"] = opts_dict
             payload["correct_options"] = correct_list
             
-        res = requests.put(url, json=payload, timeout=15)
-        if res.status_code in [200, 201]:
+        if is_new_question:
+            res = requests.post(url, json=payload, timeout=15)
+        else:
+            res = requests.put(url, json=payload, timeout=15)
+
+        # ClassMarker API returns HTTP 200 even for error responses! We MUST check the JSON status key.
+        res_json = {}
+        try:
+            res_json = res.json()
+        except Exception:
+            pass
+
+        if res.status_code in [200, 201] and res_json.get("status") == "ok":
+            # Extract newly assigned ClassMarker QuestionID
+            new_cm_id = (
+                res_json.get("question", {}).get("question_id") or 
+                res_json.get("question_id") or 
+                res_json.get("id")
+            )
+            if new_cm_id:
+                try:
+                    new_cm_id = int(new_cm_id)
+                except Exception:
+                    new_cm_id = None
+
             with engine.begin() as conn:
-                conn.execute(
-                    text("UPDATE CM_Questions SET IsLocallyModified = 0, SyncedAt = :now WHERE QuestionID = :id"),
-                    {"now": datetime.now(), "id": question_id}
-                )
-                conn.execute(
-                    text("DELETE FROM CM_Questions_Original WHERE QuestionID = :id"),
-                    {"id": question_id}
-                )
+                if is_new_question and new_cm_id:
+                    # Update temporary negative ID to real ClassMarker positive ID
+                    conn.execute(
+                        text("UPDATE CM_Questions SET QuestionID = :new_id, IsLocallyModified = 0, SyncedAt = :now WHERE QuestionID = :old_id"),
+                        {"new_id": new_cm_id, "now": datetime.now(), "old_id": question_id}
+                    )
+                    conn.execute(
+                        text("DELETE FROM CM_Questions_Original WHERE QuestionID = :id OR QuestionID = :new_id"),
+                        {"id": question_id, "new_id": new_cm_id}
+                    )
+                else:
+                    conn.execute(
+                        text("UPDATE CM_Questions SET IsLocallyModified = 0, SyncedAt = :now WHERE QuestionID = :id"),
+                        {"now": datetime.now(), "id": question_id}
+                    )
+                    conn.execute(
+                        text("DELETE FROM CM_Questions_Original WHERE QuestionID = :id"),
+                        {"id": question_id}
+                    )
+            st.success(f"🎉 Η ερώτηση συγχρονίστηκε επιτυχώς στο ClassMarker (ID: {new_cm_id or question_id})!")
             return True
         else:
-            st.error(f"❌ Το ClassMarker API επέστρεψε σφάλμα {res.status_code}: {res.text}")
+            # ClassMarker returned an error inside the 200 OK JSON response
+            err_obj = res_json.get("error", {})
+            err_msg = err_obj.get("error_message") or res_json.get("message") or res.text
+            err_details = err_obj.get("error_details", [])
+            if err_details:
+                err_msg += f" Details: {', '.join(err_details)}"
+            st.error(f"❌ Το ClassMarker API απέρριψε την ερώτηση: {err_msg}")
             return False
     except Exception as e:
         st.error(f"❌ Σφάλμα κατά τη σύνδεση με το API: {e}")
@@ -4587,8 +4673,55 @@ def edit_question_dialog(q_row, categories_df, users_map, can_manage):
     cat_list = list(cat_options_map.keys())
     cat_idx = cat_list.index(current_cat_name) if current_cat_name in cat_list else 0
     
-    edit_cat_name = st.selectbox("Κατηγορία", options=cat_list, index=cat_idx, key=f"dialog_edit_cat_{question_id}")
-    edit_cat_id = cat_options_map[edit_cat_name]
+    col_cat, col_type = st.columns(2)
+    with col_cat:
+        edit_cat_name = st.selectbox("Κατηγορία", options=cat_list, index=cat_idx, key=f"dialog_edit_cat_{question_id}")
+        edit_cat_id = cat_options_map[edit_cat_name]
+        
+    with col_type:
+        q_type_options = [
+            "multiplechoice",
+            "multipleresponse",
+            "truefalse",
+            "freeform",
+            "essay",
+            "matching",
+            "short_answer"
+        ]
+        type_display_labels = {
+            "multiplechoice": "Πολλαπλής Επιλογής - 1 Σωστή (multiplechoice)",
+            "multipleresponse": "Πολλαπλής Επιλογής - Πολλαπλές Σωστές (multipleresponse)",
+            "truefalse": "Σωστό / Λάθος (truefalse)",
+            "freeform": "Ανάπτυξης / Κειμένου (freeform)",
+            "essay": "Έκθεση / Δοκίμιο (essay)",
+            "matching": "Αντιστοίχισης (matching)",
+            "short_answer": "Σύντομη Απάντηση (short_answer)",
+        }
+        
+        curr_raw_type = str(q_row["QuestionType"]).replace("_", "").lower()
+        if curr_raw_type in ["multiplechoice", "multiple_choice"]:
+            curr_type_key = "multiplechoice"
+        elif curr_raw_type in ["truefalse", "true_false"]:
+            curr_type_key = "truefalse"
+        elif curr_raw_type in ["multipleresponse"]:
+            curr_type_key = "multipleresponse"
+        elif curr_raw_type in ["essay"]:
+            curr_type_key = "essay"
+        elif curr_raw_type in ["matching"]:
+            curr_type_key = "matching"
+        elif curr_raw_type in ["short_answer", "shortanswer"]:
+            curr_type_key = "short_answer"
+        else:
+            curr_type_key = "freeform"
+
+        type_idx = q_type_options.index(curr_type_key) if curr_type_key in q_type_options else 0
+        edit_q_type = st.selectbox(
+            "Τύπος Ερώτησης",
+            options=q_type_options,
+            format_func=lambda x: type_display_labels.get(x, x),
+            index=type_idx,
+            key=f"dialog_edit_qtype_{question_id}"
+        )
     
     col1, col2 = st.columns(2)
     with col1:
@@ -4598,7 +4731,7 @@ def edit_question_dialog(q_row, categories_df, users_map, can_manage):
         st.write(" ")
         edit_active = st.checkbox("Ενεργή", value=bool(q_row["Active"]), key=f"dialog_edit_act_{question_id}")
         
-    # Edit choices/options based on type
+    # Edit choices/options based on selected QuestionType
     options = []
     try:
         options = json.loads(q_row["OptionsJSON"])
@@ -4606,10 +4739,8 @@ def edit_question_dialog(q_row, categories_df, users_map, can_manage):
         pass
         
     edited_options = []
-    q_type = q_row["QuestionType"]
     
-    # We display choices if the question type is multiple choice or true/false or multi response
-    if q_type in ["multiple_choice", "true_false", "multiplechoice", "truefalse", "multipleresponse"]:
+    if edit_q_type in ["multiplechoice", "truefalse", "multipleresponse"]:
         st.write("---")
         st.markdown("**👉 Επιλογές Απαντήσεων:**")
         
@@ -4629,14 +4760,21 @@ def edit_question_dialog(q_row, categories_df, users_map, can_manage):
             
         alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         
-        if q_type in ["true_false", "truefalse"]:
+        if edit_q_type == "truefalse":
             num_options = 2
+            # Ensure default true/false option labels if switching type
+            if len(st.session_state[session_key]) < 2:
+                st.session_state[session_key] = [
+                    {"text": "Σωστό", "correct": True, "option_label": "A"},
+                    {"text": "Λάθος", "correct": False, "option_label": "B"}
+                ]
         else:
+            default_num = len(st.session_state[session_key]) if len(st.session_state[session_key]) >= 2 else 4
             num_options = st.number_input(
                 "Πλήθος Επιλογών Απαντήσεων (2-10):", 
                 min_value=2, 
                 max_value=10, 
-                value=int(len(st.session_state[session_key])),
+                value=int(default_num),
                 key=f"dialog_num_opts_{question_id}"
             )
             
@@ -4659,13 +4797,17 @@ def edit_question_dialog(q_row, categories_df, users_map, can_manage):
             edited_options.append({"text": opt_t, "correct": opt_c, "option_label": label})
             
         st.session_state[session_key] = edited_options
+    else:
+        st.write("---")
+        st.info("ℹ️ Για ερωτήσεις ανάπτυξης / κειμένου / αντιστοίχισης (Freeform / Essay / Matching / Short Answer), δεν απαιτείται καταχώρηση επιλογών απαντήσεων.")
+        edited_options = []
             
     st.write("---")
     col_save, col_push = st.columns(2)
     with col_save:
         if st.button("💾 Αποθήκευση στο Support Hub", use_container_width=True, type="primary", key=f"dialog_btn_save_{question_id}"):
-            opt_json_str = json.dumps(edited_options, ensure_ascii=False) if edited_options else q_row["OptionsJSON"]
-            if update_local_question(int(question_id), int(edit_cat_id), edit_q_text, opt_json_str, float(edit_points), bool(edit_active)):
+            opt_json_str = json.dumps(edited_options, ensure_ascii=False)
+            if update_local_question(int(question_id), int(edit_cat_id), edit_q_text, opt_json_str, float(edit_points), bool(edit_active), question_type=edit_q_type):
                 st.success("✅ Η ερώτηση αποθηκεύτηκε τοπικά!")
                 time.sleep(1)
                 st.rerun()
