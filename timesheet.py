@@ -605,6 +605,8 @@ def apply_preset_filters(filters_json):
             st.session_state["dates_key"] = [pd.to_datetime(d).date() for d in filters["dates_key"]]
         if "group_key" in filters:
             st.session_state["group_key"] = filters["group_key"]
+        if "date_group_key" in filters:
+            st.session_state["date_group_key"] = filters["date_group_key"]
         st.session_state["filters_init"] = True
         
         # Keep the backup in sync
@@ -618,6 +620,7 @@ def apply_preset_filters(filters_json):
             "comp_key": st.session_state.get("comp_key"),
             "dates_key": st.session_state.get("dates_key"),
             "group_key": st.session_state.get("group_key"),
+            "date_group_key": st.session_state.get("date_group_key"),
             "group_filter_selectbox_key": st.session_state.get("group_filter_selectbox_key"),
         }
     except Exception as e:
@@ -1226,7 +1229,7 @@ def rt_load_awaiting_customer_end_date():
             ROW_NUMBER() OVER (PARTITION BY curr.IssueID ORDER BY curr.EventDate) AS PeriodNum
         FROM RawTransitions curr WITH (NOLOCK)
         JOIN RawTransitions next WITH (NOLOCK) ON curr.IssueID = next.IssueID AND next.rn = curr.rn + 1
-        WHERE curr.Status = 'AWAITING CUSTOMER'
+        WHERE curr.Status = 'AWAITING CUSTOMER' σε  WHERE curr.Status IN ('AWAITING CUSTOMER','Awaiting Customer/Partner')
     )
     SELECT 
         IssueID,
@@ -1559,6 +1562,8 @@ if "filters_init" not in st.session_state:
                     st.session_state["dates_key"] = [pd.to_datetime(d).date() for d in filters["dates_key"]]
                 if "group_key" in filters:
                     st.session_state["group_key"] = filters["group_key"]
+                if "date_group_key" in filters:
+                    st.session_state["date_group_key"] = filters["date_group_key"]
                 
                 st.session_state.active_preset_name = default_preset["PresetName"]
                 st.session_state.active_preset_json = default_preset["FiltersJSON"]
@@ -1596,6 +1601,7 @@ if "filters_init" not in st.session_state:
         end_of_month = today.replace(day=last_day)
         st.session_state['dates_key'] = [start_of_month, end_of_month]
         st.session_state['group_key'] = ["Assignee"]
+        st.session_state['date_group_key'] = "Ανά ημέρα"
     
     st.session_state["filters_init"] = True
 
@@ -1676,6 +1682,8 @@ def render_dashboard_content(df, last_updated):
                                 st.session_state["dates_key"] = [pd.to_datetime(d).date() for d in filters["dates_key"]]
                             if "group_key" in filters:
                                 st.session_state["group_key"] = filters["group_key"]
+                            if "date_group_key" in filters:
+                                st.session_state["date_group_key"] = filters["date_group_key"]
                             
                             st.session_state.active_preset_name = selected_preset["PresetName"]
                             st.session_state.active_preset_json = selected_preset["FiltersJSON"]
@@ -1708,7 +1716,8 @@ def render_dashboard_content(df, last_updated):
                         "lsp_key": st.session_state.get("lsp_key", []),
                         "comp_key": st.session_state.get("comp_key", []),
                         "dates_key": [str(d) for d in st.session_state.get("dates_key", [])],
-                        "group_key": st.session_state.get("group_key", ["Assignee"])
+                        "group_key": st.session_state.get("group_key", ["Assignee"]),
+                        "date_group_key": st.session_state.get("date_group_key", "Ανά ημέρα")
                     }
                     import json
                     if save_user_preset(st.session_state.user_id, new_preset_name.strip(), json.dumps(filters_dict)):
@@ -1745,7 +1754,8 @@ def render_dashboard_content(df, last_updated):
                             "lsp_key": st.session_state.get("lsp_key", []),
                             "comp_key": st.session_state.get("comp_key", []),
                             "dates_key": [str(d) for d in st.session_state.get("dates_key", [])],
-                            "group_key": st.session_state.get("group_key", ["Assignee"])
+                            "group_key": st.session_state.get("group_key", ["Assignee"]),
+                            "date_group_key": st.session_state.get("date_group_key", "Ανά ημέρα")
                         }
                         import json
                         new_json = json.dumps(filters_dict)
@@ -1864,7 +1874,7 @@ def render_dashboard_content(df, last_updated):
             if st.button("🔄 Καθαρισμός Φίλτρων", type="primary", width='stretch', key="ts_clear_filters_btn"):
                 filter_keys = [
                     'proj_key', 'auth_key', 'charge_key', 'time_key', 'partner_key', 'lsp_key', 'comp_key', 
-                    'dates_key', 'group_key', 'filters_init', 'group_filter_selectbox_key', 
+                    'dates_key', 'group_key', 'date_group_key', 'filters_init', 'group_filter_selectbox_key', 
                     'active_preset_name', 'active_preset_json'
                 ]
                 st.toast("🔄 Τα φίλτρα καθαρίστηκαν!")
@@ -1900,21 +1910,40 @@ def render_dashboard_content(df, last_updated):
     # --- Ενότητα Β: Pivot Table & Export ---
     st.subheader("📅 Αναλυτικό Timesheet", divider="gray")
     
-    group_options = ["Assignee", "Parent Key", "Parent Title", "Issue Key", "Project", "Time Type", "Charge Type", "Partner Name", "LSP Customer Name"]
-    sel_group = st.multiselect("🗂️ Ομαδοποίηση (Group By) ανά:", options=group_options, key="group_key")
+    col_grp1, col_grp2 = st.columns([3, 1])
+    with col_grp1:
+        group_options = ["Assignee", "Parent Key", "Parent Title", "Issue Key", "Project", "Time Type", "Charge Type", "Partner Name", "LSP Customer Name"]
+        sel_group = st.multiselect("🗂️ Ομαδοποίηση (Group By) ανά:", options=group_options, key="group_key")
+    with col_grp2:
+        date_group_options = ["Ανά ημέρα", "Ανά μήνα", "Ανά τρίμηνο", "Ανά έτος"]
+        sel_date_group = st.selectbox("📅 Ομαδοποίηση Ημερομηνιών:", options=date_group_options, key="date_group_key")
     
     if not sel_group:
         st.error("Επιλέξτε τουλάχιστον ένα πεδίο ομαδοποίησης.")
         st.stop()
     
     if not filtered_df.empty:
+        pivot_df = filtered_df.copy()
+        if sel_date_group != "Ανά ημέρα":
+            dt_series = pd.to_datetime(pivot_df["Date"], errors='coerce')
+            if sel_date_group == "Ανά μήνα":
+                pivot_df["PivotDate"] = dt_series.dt.strftime('%Y-%m')
+            elif sel_date_group == "Ανά τρίμηνο":
+                pivot_df["PivotDate"] = dt_series.dt.year.astype(str) + "-Q" + dt_series.dt.quarter.astype(str)
+            elif sel_date_group == "Ανά έτος":
+                pivot_df["PivotDate"] = dt_series.dt.strftime('%Y')
+            else:
+                pivot_df["PivotDate"] = pivot_df["Date"]
+        else:
+            pivot_df["PivotDate"] = pivot_df["Date"]
+
         pivot_groups = sel_group.copy()
-        if "Parent Key" in sel_group and "Parent Title" in filtered_df.columns and "Parent Title" not in sel_group:
+        if "Parent Key" in sel_group and "Parent Title" in pivot_df.columns and "Parent Title" not in sel_group:
             pivot_groups.append("Parent Title")
     
-        pivot = filtered_df.pivot_table(
+        pivot = pivot_df.pivot_table(
             index=pivot_groups,
-            columns="Date",
+            columns="PivotDate",
             values="Minutes",
             aggfunc="sum",
             fill_value=0,
